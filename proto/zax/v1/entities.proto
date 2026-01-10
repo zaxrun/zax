@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package zax.v1;
+
+message Range {
+  int32 start_line = 1;
+  int32 start_column = 2;
+  int32 end_line = 3;
+  int32 end_column = 4;
+}
+
+message Finding {
+  string stable_id = 1;
+  string tool = 2;
+  string rule = 3;
+  string file = 4;
+  Range range = 5;
+  string message = 6;
+}
+
+message TestFailure {
+  string stable_id = 1;
+  string test_id = 2;
+  string file = 3;
+  string message = 4;
+  string signature = 5;
+}

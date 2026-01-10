@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package zax.v1;
+
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_FINDING = 1;
+  ARTIFACT_KIND_TEST_FAILURE = 2;
+}
+
+message ArtifactRef {
+  string artifact_id = 1;
+  ArtifactKind kind = 2;
+  string path = 3;
+  string hash = 4;
+}
+
+message ArtifactManifest {
+  string workspace_id = 1;
+  string run_id = 2;
+  repeated ArtifactRef artifacts = 3;
+}

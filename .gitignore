@@ -1,2 +1,24 @@
 .spec/*
 .env
+
+# Node
+node_modules/
+bun.lock
+
+# Rust
+crates/target/
+
+# Generated proto types
+packages/engine/src/gen/
+
+# TypeScript build output
+packages/*/dist/
+
+# Compiled CLI binary
+packages/cli/zax
+
+# Logs
+*.log
+
+# macOS
+.DS_Store

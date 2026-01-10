@@ -1,0 +1,13 @@
+{
+  "name": "@zax/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./src/main.ts --outdir=./dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@bufbuild/protobuf": "^2.0.0"
+  }
+}

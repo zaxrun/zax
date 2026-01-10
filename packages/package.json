@@ -1,0 +1,8 @@
+{
+  "name": "zax-packages",
+  "private": true,
+  "workspaces": ["cli", "engine"],
+  "scripts": {
+    "build": "bun run --filter '*' build"
+  }
+}

@@ -1,0 +1,8 @@
+version: v2
+name: buf.build/zax/zax
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

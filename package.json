@@ -1,0 +1,12 @@
+{
+  "name": "zax",
+  "private": true,
+  "scripts": {
+    "build": "bun run generate && cd crates && cargo build && cd ../packages && bun install && bun run build && cd cli && bun build ./src/main.ts --compile --outfile=zax",
+    "clean": "rm -rf crates/target node_modules packages/node_modules packages/cli/node_modules packages/engine/node_modules packages/engine/src/gen packages/cli/zax",
+    "generate": "cd proto && buf generate"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.10.2"
+  }
+}
