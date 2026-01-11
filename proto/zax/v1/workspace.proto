@@ -6,7 +6,9 @@ import "zax/v1/artifacts.proto";
 
 message PingRequest {}
 
-message PingResponse {}
+message PingResponse {
+  string version = 1;
+}
 
 message IngestManifestRequest {
   ArtifactManifest manifest = 1;

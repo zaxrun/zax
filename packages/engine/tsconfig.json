@@ -9,8 +9,8 @@
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist",
     "declaration": true,
-    "composite": true
+    "composite": true,
+    "types": ["bun"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/gen/**/*"]
+  "include": ["src/**/*"]
 }

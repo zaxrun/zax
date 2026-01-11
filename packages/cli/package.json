@@ -5,9 +5,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build ./src/main.ts --outdir=./dist"
+    "build": "echo 'CLI runs via bun directly, no bundling needed'"
+  },
+  "dependencies": {
+    "blake3": "^2.0.0"
   },
   "devDependencies": {
+    "@types/bun": "^1.0.0",
     "typescript": "^5.0.0"
   }
 }
