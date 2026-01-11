@@ -7,6 +7,8 @@ use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+mod store;
+
 pub mod zax {
     pub mod v1 {
         #![allow(clippy::all)]
@@ -60,6 +62,9 @@ async fn run_server(cache_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
     let port = local_addr.port();
+
+    // Initialize storage before anything else
+    store::init_storage(&cache_dir)?;
 
     write_port_file(&cache_dir, port).await?;
 
