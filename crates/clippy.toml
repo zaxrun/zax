@@ -1,0 +1,20 @@
+# Clippy configuration for zax
+# Matches the spirit of ESLint rules: strict limits for reviewable code
+
+# Complexity limits (matches ESLint complexity: 12)
+cognitive-complexity-threshold = 12
+
+# Function size limits (matches ESLint max-lines-per-function: 40)
+too-many-lines-threshold = 40
+
+# Parameter limits (matches ESLint max-params: 4)
+too-many-arguments-threshold = 4
+
+# Type complexity
+type-complexity-threshold = 250
+
+# Struct field limits
+max-struct-bools = 3
+
+# Large types on stack
+trivial-copy-size-limit = 8

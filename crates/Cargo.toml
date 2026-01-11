@@ -1,3 +1,46 @@
 [workspace]
 resolver = "2"
 members = ["zax_workspace_service"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Correctness
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Complexity (matches ESLint rules)
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+too_many_arguments = "warn"
+
+# Code quality
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+needless_pass_by_value = "warn"
+redundant_closure_for_method_calls = "warn"
+unnecessary_wraps = "warn"
+inefficient_to_string = "warn"
+implicit_clone = "warn"
+manual_string_new = "warn"
+semicolon_if_nothing_returned = "warn"
+inconsistent_struct_constructor = "warn"
+
+# Style
+single_match_else = "warn"
+match_bool = "warn"
+match_wildcard_for_single_variants = "warn"
+needless_continue = "warn"
+redundant_else = "warn"
+manual_let_else = "warn"
+
+# Pedantic (selected)
+doc_markdown = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"

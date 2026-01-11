@@ -2,6 +2,9 @@ use tonic::{Request, Response, Status};
 
 pub mod zax {
     pub mod v1 {
+        // Allow clippy warnings on generated proto code
+        #![allow(clippy::all)]
+        #![allow(clippy::pedantic)]
         tonic::include_proto!("zax.v1");
     }
 }
