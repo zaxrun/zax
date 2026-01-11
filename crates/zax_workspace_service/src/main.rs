@@ -93,3 +93,63 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use tonic::Request;
+
+    #[tokio::test]
+    async fn ping_returns_cargo_pkg_version() {
+        let service = WorkspaceServiceImpl;
+        let request = Request::new(PingRequest {});
+        let response = service.ping(request).await.unwrap();
+        assert_eq!(response.get_ref().version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn ping_version_is_semver() {
+        let service = WorkspaceServiceImpl;
+        let request = Request::new(PingRequest {});
+        let response = service.ping(request).await.unwrap();
+        let version = &response.get_ref().version;
+        let parts: Vec<&str> = version.split('.').collect();
+        assert_eq!(parts.len(), 3, "Version should be semver: {version}");
+        for part in parts {
+            assert!(part.parse::<u32>().is_ok(), "Invalid semver part: {part}");
+        }
+    }
+
+    #[tokio::test]
+    async fn write_port_file_creates_file() {
+        let dir = tempdir().unwrap();
+        write_port_file(dir.path(), 12345).await.unwrap();
+        let content = tokio::fs::read_to_string(dir.path().join("rust.port"))
+            .await
+            .unwrap();
+        assert_eq!(content, "12345");
+    }
+
+    #[tokio::test]
+    async fn write_port_file_is_atomic() {
+        let dir = tempdir().unwrap();
+        write_port_file(dir.path(), 54321).await.unwrap();
+        // tmp file should not exist after atomic write
+        assert!(!dir.path().join("rust.port.tmp").exists());
+        // final file should exist
+        assert!(dir.path().join("rust.port").exists());
+    }
+
+    #[tokio::test]
+    async fn write_port_file_overwrites_existing() {
+        let dir = tempdir().unwrap();
+        write_port_file(dir.path(), 11111).await.unwrap();
+        write_port_file(dir.path(), 22222).await.unwrap();
+        let content = tokio::fs::read_to_string(dir.path().join("rust.port"))
+            .await
+            .unwrap();
+        assert_eq!(content, "22222");
+    }
+}

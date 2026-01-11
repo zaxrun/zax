@@ -11,7 +11,10 @@
     "lint:types": "cd packages/engine && bunx tsc --noEmit && cd ../cli && bunx tsc --noEmit",
     "lint:ts": "eslint packages/*/src/**/*.ts",
     "lint:rust": "cd crates && cargo clippy --all-targets -- -D warnings",
-    "lint:fix": "eslint packages/*/src/**/*.ts --fix"
+    "lint:fix": "eslint packages/*/src/**/*.ts --fix",
+    "test": "bun run test:rust && bun run test:ts",
+    "test:ts": "cd packages/cli && bun test && cd ../engine && bun test",
+    "test:rust": "cd crates && cargo test"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.10.2",

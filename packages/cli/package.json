@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "echo 'CLI runs via bun directly, no bundling needed'"
+    "build": "echo 'CLI runs via bun directly, no bundling needed'",
+    "test": "bun test"
   },
   "dependencies": {
     "blake3": "^2.0.0"

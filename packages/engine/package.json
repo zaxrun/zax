@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "echo 'Engine runs via bun directly, no bundling needed'"
+    "build": "echo 'Engine runs via bun directly, no bundling needed'",
+    "test": "bun test"
   },
   "dependencies": {
     "@connectrpc/connect": "^2.0.0",
