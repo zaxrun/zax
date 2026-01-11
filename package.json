@@ -1,5 +1,6 @@
 {
   "name": "zax",
+  "license": "MPL-2.0",
   "private": true,
   "scripts": {
     "build": "bun run generate && cd crates && cargo build && cd ../packages && bun install && bun run build && cd cli && bun build ./src/main.ts --compile --outfile=zax",

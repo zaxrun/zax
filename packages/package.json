@@ -1,5 +1,6 @@
 {
   "name": "zax-packages",
+  "license": "MPL-2.0",
   "private": true,
   "workspaces": ["cli", "engine"],
   "scripts": {
