@@ -1,12 +1,16 @@
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+mod normalize;
+mod parsers;
+mod rpc;
 mod store;
 
 pub mod zax {
@@ -23,7 +27,9 @@ use zax::v1::{
     IngestManifestResponse, PingRequest, PingResponse,
 };
 
-pub struct WorkspaceServiceImpl;
+pub struct WorkspaceServiceImpl {
+    state: rpc::RpcState,
+}
 
 #[tonic::async_trait]
 impl WorkspaceService for WorkspaceServiceImpl {
@@ -36,16 +42,27 @@ impl WorkspaceService for WorkspaceServiceImpl {
 
     async fn ingest_manifest(
         &self,
-        _request: Request<IngestManifestRequest>,
+        request: Request<IngestManifestRequest>,
     ) -> Result<Response<IngestManifestResponse>, Status> {
-        Err(Status::unimplemented("Not implemented"))
+        let manifest = request.into_inner().manifest.ok_or_else(|| {
+            Status::invalid_argument("manifest is required")
+        })?;
+        rpc::ingest_manifest(&self.state, &manifest)?;
+        Ok(Response::new(IngestManifestResponse {}))
     }
 
     async fn get_delta_summary(
         &self,
-        _request: Request<GetDeltaSummaryRequest>,
+        request: Request<GetDeltaSummaryRequest>,
     ) -> Result<Response<GetDeltaSummaryResponse>, Status> {
-        Err(Status::unimplemented("Not implemented"))
+        let req = request.into_inner();
+        let (new_failures, fixed_failures) = rpc::get_delta_summary(&self.state, &req.workspace_id)?;
+        Ok(Response::new(GetDeltaSummaryResponse {
+            new_findings: 0,
+            fixed_findings: 0,
+            new_test_failures: new_failures,
+            fixed_test_failures: fixed_failures,
+        }))
     }
 }
 
@@ -65,12 +82,17 @@ async fn run_server(cache_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>
 
     // Initialize storage before anything else
     store::init_storage(&cache_dir)?;
+    let conn = store::open_connection(&cache_dir)?;
 
     write_port_file(&cache_dir, port).await?;
 
-    let service = WorkspaceServiceImpl;
+    let service = WorkspaceServiceImpl {
+        state: rpc::RpcState {
+            cache_dir: cache_dir.clone(),
+            conn: Arc::new(Mutex::new(conn)),
+        },
+    };
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
     let mut sigterm = signal(SignalKind::terminate())?;
 
     Server::builder()
@@ -106,9 +128,21 @@ mod tests {
     use tempfile::tempdir;
     use tonic::Request;
 
+    fn create_test_service() -> WorkspaceServiceImpl {
+        let dir = tempdir().unwrap();
+        store::init_storage(dir.path()).unwrap();
+        let conn = store::open_connection(dir.path()).unwrap();
+        WorkspaceServiceImpl {
+            state: rpc::RpcState {
+                cache_dir: dir.path().to_path_buf(),
+                conn: Arc::new(Mutex::new(conn)),
+            },
+        }
+    }
+
     #[tokio::test]
     async fn ping_returns_cargo_pkg_version() {
-        let service = WorkspaceServiceImpl;
+        let service = create_test_service();
         let request = Request::new(PingRequest {});
         let response = service.ping(request).await.unwrap();
         assert_eq!(response.get_ref().version, env!("CARGO_PKG_VERSION"));
@@ -116,13 +150,13 @@ mod tests {
 
     #[tokio::test]
     async fn ping_version_is_semver() {
-        let service = WorkspaceServiceImpl;
+        let service = create_test_service();
         let request = Request::new(PingRequest {});
         let response = service.ping(request).await.unwrap();
         let version = &response.get_ref().version;
         let parts: Vec<&str> = version.split('.').collect();
         assert_eq!(parts.len(), 3, "Version should be semver: {version}");
-        for part in parts {
+        for part in &parts {
             assert!(part.parse::<u32>().is_ok(), "Invalid semver part: {part}");
         }
     }

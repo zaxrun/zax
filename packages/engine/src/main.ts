@@ -111,7 +111,7 @@ async function main(): Promise<void> {
       unlinkSync(socketPath);
     }
 
-    const server = createEngineServer({ socketPath, rustClient: client });
+    const server = createEngineServer({ socketPath, cacheDir, rustClient: client });
     log(`HTTP server listening on ${socketPath}`);
 
     const handleSignal = async (): Promise<void> => {

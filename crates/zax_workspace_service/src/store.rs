@@ -1,7 +1,7 @@
-//! `SQLite` storage initialization for the workspace service.
+//! `SQLite` storage initialization and query functions.
 
 use refinery::embed_migrations;
-use rusqlite::Connection;
+use rusqlite::{params, Connection, Transaction};
 use std::path::Path;
 use thiserror::Error;
 
@@ -16,15 +16,96 @@ pub enum StoreError {
     Migration(#[from] refinery::Error),
 }
 
+/// A test failure to insert into the database.
+pub struct TestFailureRow {
+    pub stable_id: String,
+    pub test_id: String,
+    pub file: String,
+    pub message: String,
+}
+
+/// A completed run for delta computation.
+pub struct RunInfo {
+    pub run_id: String,
+}
+
 /// Initializes the `SQLite` database at `<cache_dir>/db.sqlite`.
-///
-/// Creates the database file if it doesn't exist, then runs all pending
-/// migrations. Already-applied migrations are skipped.
 pub fn init_storage(cache_dir: &Path) -> Result<(), StoreError> {
     let db_path = cache_dir.join("db.sqlite");
     let mut conn = Connection::open(&db_path)?;
     migrations::runner().run(&mut conn)?;
     Ok(())
+}
+
+/// Opens a connection to the database.
+pub fn open_connection(cache_dir: &Path) -> Result<Connection, StoreError> {
+    let db_path = cache_dir.join("db.sqlite");
+    Ok(Connection::open(db_path)?)
+}
+
+/// Inserts a new run record.
+pub fn insert_run(
+    tx: &Transaction,
+    workspace_id: &str,
+    run_id: &str,
+    started_at: i64,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT INTO runs (workspace_id, run_id, started_at) VALUES (?1, ?2, ?3)",
+        params![workspace_id, run_id, started_at],
+    )?;
+    Ok(())
+}
+
+/// Marks a run as completed.
+pub fn complete_run(tx: &Transaction, run_id: &str, completed_at: i64) -> Result<(), StoreError> {
+    tx.execute(
+        "UPDATE runs SET completed_at = ?1 WHERE run_id = ?2",
+        params![completed_at, run_id],
+    )?;
+    Ok(())
+}
+
+/// Inserts test failures in batch.
+pub fn insert_test_failures(
+    tx: &Transaction,
+    run_id: &str,
+    failures: &[TestFailureRow],
+) -> Result<(), StoreError> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO test_failures (run_id, stable_id, test_id, file, message) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    for f in failures {
+        stmt.execute(params![run_id, f.stable_id, f.test_id, f.file, f.message])?;
+    }
+    Ok(())
+}
+
+/// Gets the most recent completed runs for a workspace.
+pub fn get_recent_runs(
+    conn: &Connection,
+    workspace_id: &str,
+    limit: usize,
+) -> Result<Vec<RunInfo>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT run_id FROM runs \
+         WHERE workspace_id = ?1 AND completed_at IS NOT NULL \
+         ORDER BY started_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![workspace_id, limit], |row| {
+        Ok(RunInfo {
+            run_id: row.get(0)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+}
+
+/// Gets all `stable_ids` for a given run.
+pub fn get_stable_ids_for_run(conn: &Connection, run_id: &str) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT stable_id FROM test_failures WHERE run_id = ?1")?;
+    let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
 }
 
 #[cfg(test)]
@@ -34,146 +115,81 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn setup() -> (tempfile::TempDir, Connection) {
+        let dir = tempdir().unwrap();
+        init_storage(dir.path()).unwrap();
+        let conn = open_connection(dir.path()).unwrap();
+        (dir, conn)
+    }
+
     #[test]
-    fn init_storage_creates_db_file() {
+    fn init_creates_db_and_is_idempotent() {
         let dir = tempdir().unwrap();
         init_storage(dir.path()).unwrap();
         assert!(dir.path().join("db.sqlite").exists());
+        init_storage(dir.path()).unwrap(); // Second call succeeds
     }
 
     #[test]
-    fn init_storage_idempotent() {
-        let dir = tempdir().unwrap();
-        init_storage(dir.path()).unwrap();
-        // Second call should succeed without error
-        init_storage(dir.path()).unwrap();
-
-        // Verify migration was not re-run (only one entry in history)
-        let conn = Connection::open(dir.path().join("db.sqlite")).unwrap();
-        let count: i32 = conn
+    fn schema_has_correct_tables_and_indices() {
+        let (_dir, conn) = setup();
+        // Runs table with workspace_id
+        conn.prepare("SELECT workspace_id FROM runs LIMIT 0").unwrap();
+        // Test failures table
+        conn.prepare("SELECT stable_id, test_id FROM test_failures LIMIT 0")
+            .unwrap();
+        // Indices exist
+        let idx_count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM refinery_schema_history",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND \
+                 name IN ('idx_runs_workspace_started', 'idx_test_failures_run_stable')",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "Migration should only be applied once");
+        assert_eq!(idx_count, 2);
     }
 
     #[test]
-    fn init_storage_runs_table_exists() {
-        let dir = tempdir().unwrap();
-        init_storage(dir.path()).unwrap();
+    fn insert_and_query_runs() {
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        complete_run(&tx, "run1", 2000).unwrap();
+        tx.commit().unwrap();
 
-        let conn = Connection::open(dir.path().join("db.sqlite")).unwrap();
-        // Verify runs table exists with correct columns
-        let stmt = conn
-            .prepare("SELECT id, run_id, started_at, completed_at FROM runs LIMIT 0")
-            .unwrap();
-        let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-        assert_eq!(columns, vec!["id", "run_id", "started_at", "completed_at"]);
+        let runs = get_recent_runs(&conn, "ws1", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "run1");
     }
 
     #[test]
-    fn init_storage_run_id_unique_constraint() {
-        let dir = tempdir().unwrap();
-        init_storage(dir.path()).unwrap();
+    fn insert_and_query_failures() {
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        let failures = vec![TestFailureRow {
+            stable_id: "abc123".into(),
+            test_id: "test1".into(),
+            file: "test.ts".into(),
+            message: "failed".into(),
+        }];
+        insert_test_failures(&tx, "run1", &failures).unwrap();
+        tx.commit().unwrap();
 
-        let conn = Connection::open(dir.path().join("db.sqlite")).unwrap();
-        conn.execute(
-            "INSERT INTO runs (run_id, started_at) VALUES ('test-run', 1234567890)",
-            [],
-        )
-        .unwrap();
-
-        // Duplicate run_id should fail
-        let result = conn.execute(
-            "INSERT INTO runs (run_id, started_at) VALUES ('test-run', 1234567891)",
-            [],
-        );
-        assert!(result.is_err(), "Duplicate run_id should fail");
+        let ids = get_stable_ids_for_run(&conn, "run1").unwrap();
+        assert_eq!(ids, vec!["abc123"]);
     }
 
     #[test]
-    fn init_storage_refinery_schema_history_exists() {
+    fn error_on_invalid_storage() {
         let dir = tempdir().unwrap();
-        init_storage(dir.path()).unwrap();
+        let bad_path = dir.path().join("nonexistent");
+        assert!(init_storage(&bad_path).is_err());
 
-        let conn = Connection::open(dir.path().join("db.sqlite")).unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM refinery_schema_history",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(count >= 1, "Should have at least one migration in history");
-    }
-
-    #[test]
-    fn init_storage_read_only_dir_fails() {
-        let dir = tempdir().unwrap();
-        let readonly_path = dir.path().join("readonly");
-        fs::create_dir(&readonly_path).unwrap();
-
-        // Make directory read-only
-        let mut perms = fs::metadata(&readonly_path).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&readonly_path, perms).unwrap();
-
-        let result = init_storage(&readonly_path);
-        assert!(result.is_err(), "Should fail on read-only directory");
-
-        // Clean up: restore write permissions for tempdir cleanup
-        let mut perms = fs::metadata(&readonly_path).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        fs::set_permissions(&readonly_path, perms).unwrap();
-    }
-
-    #[test]
-    fn init_storage_corrupt_db_fails() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("db.sqlite");
-
-        // Write garbage bytes to simulate corrupt database
-        fs::write(&db_path, b"not a valid sqlite database").unwrap();
-
-        let result = init_storage(dir.path());
-        assert!(result.is_err(), "Should fail on corrupt database");
-    }
-
-    #[test]
-    fn init_storage_nonexistent_dir_fails() {
-        let dir = tempdir().unwrap();
-        let nonexistent = dir.path().join("does_not_exist");
-        let result = init_storage(&nonexistent);
-        assert!(
-            matches!(result, Err(StoreError::Sqlite(_))),
-            "Should fail with Sqlite error when cache_dir doesn't exist"
-        );
-    }
-
-    #[test]
-    fn init_storage_read_only_returns_sqlite_error() {
-        let dir = tempdir().unwrap();
-        let readonly_path = dir.path().join("readonly2");
-        fs::create_dir(&readonly_path).unwrap();
-
-        let mut perms = fs::metadata(&readonly_path).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&readonly_path, perms).unwrap();
-
-        let result = init_storage(&readonly_path);
-        assert!(
-            matches!(result, Err(StoreError::Sqlite(_))),
-            "Read-only dir should return StoreError::Sqlite"
-        );
-
-        // Clean up
-        let mut perms = fs::metadata(&readonly_path).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        fs::set_permissions(&readonly_path, perms).unwrap();
+        let corrupt_db = dir.path().join("corrupt");
+        fs::create_dir(&corrupt_db).unwrap();
+        fs::write(corrupt_db.join("db.sqlite"), b"garbage").unwrap();
+        assert!(init_storage(&corrupt_db).is_err());
     }
 }

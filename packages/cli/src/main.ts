@@ -1,13 +1,16 @@
 import { existsSync, unlinkSync, writeFileSync, openSync, closeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { computeWorkspaceId, getCacheDir, ensureCacheDir } from "./lib/workspace.js";
-import { connectToEngine, getVersion } from "./lib/engine-client.js";
+import { connectToEngine, getVersion, postCheck } from "./lib/engine-client.js";
 
 const SOCKET_WAIT_TIMEOUT_MS = 10000;
 const SOCKET_POLL_INTERVAL_MS = 100;
 
 function printUsage(): void {
   console.log("Usage: zx [options] [command]");
+  console.log("");
+  console.log("Commands:");
+  console.log("  check            Run tests and show delta");
   console.log("");
   console.log("Options:");
   console.log("  -v, --version    Print version");
@@ -102,6 +105,19 @@ async function handleVersion(cacheDir: string): Promise<void> {
   }
 }
 
+async function handleCheck(cacheDir: string, workspaceId: string, cwd: string): Promise<void> {
+  try {
+    const socketPath = await ensureEngine(cacheDir);
+    const result = await postCheck(socketPath, workspaceId, cwd);
+    console.log(`${result.new_test_failures} new, ${result.fixed_test_failures} fixed`);
+    process.exit(result.new_test_failures > 0 ? 1 : 0);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printError(message);
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const cwd = process.cwd();
@@ -132,6 +148,11 @@ async function main(): Promise<void> {
   if (arg === "--help" || arg === "-h") {
     printUsage();
     process.exit(0);
+  }
+
+  if (arg === "check") {
+    await handleCheck(cacheDir, workspaceId, cwd);
+    return;
   }
 
   printError(`Unknown option: ${arg}`);

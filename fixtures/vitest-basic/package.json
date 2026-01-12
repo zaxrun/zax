@@ -1,0 +1,13 @@
+{
+  "name": "vitest-basic",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:json": "vitest run --reporter=json"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
