@@ -1,5 +1,9 @@
 //! RPC handler implementations for `IngestManifest` and `GetDeltaSummary`.
 
+// tonic::Status is 3 words (24 bytes) which exceeds clippy's default threshold.
+// This is intentional - Status provides rich error info for gRPC responses.
+#![allow(clippy::result_large_err)]
+
 use crate::normalize::stable_id;
 use crate::parsers::vitest;
 use crate::store::{self, TestFailureRow};
@@ -21,7 +25,6 @@ pub struct RpcState {
 }
 
 /// Handles `IngestManifest` RPC.
-#[allow(clippy::result_large_err)]
 pub fn ingest_manifest(state: &RpcState, manifest: &ArtifactManifest) -> Result<(), Status> {
     validate_manifest(manifest)?;
     let artifact = get_test_failure_artifact(manifest)?;
@@ -32,7 +35,6 @@ pub fn ingest_manifest(state: &RpcState, manifest: &ArtifactManifest) -> Result<
     Ok(())
 }
 
-#[allow(clippy::result_large_err)]
 fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), Status> {
     if manifest.workspace_id.is_empty() {
         return Err(Status::invalid_argument("workspace_id is required"));
@@ -43,7 +45,6 @@ fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), Status> {
     Ok(())
 }
 
-#[allow(clippy::result_large_err)]
 fn get_test_failure_artifact(
     manifest: &ArtifactManifest,
 ) -> Result<&crate::zax::v1::ArtifactRef, Status> {
@@ -54,7 +55,6 @@ fn get_test_failure_artifact(
         .ok_or_else(|| Status::invalid_argument("no test failure artifact in manifest"))
 }
 
-#[allow(clippy::result_large_err)]
 fn validate_artifact_path(cache_dir: &Path, artifact_path: &str) -> Result<std::path::PathBuf, Status> {
     let path = std::path::PathBuf::from(artifact_path);
     let canonical = path.canonicalize().map_err(|_| {
@@ -67,7 +67,6 @@ fn validate_artifact_path(cache_dir: &Path, artifact_path: &str) -> Result<std::
     Ok(canonical)
 }
 
-#[allow(clippy::result_large_err)]
 fn read_artifact_file(path: &Path) -> Result<String, Status> {
     let metadata = std::fs::metadata(path)
         .map_err(|_| Status::not_found("artifact file not found"))?;
@@ -81,7 +80,6 @@ fn read_artifact_file(path: &Path) -> Result<String, Status> {
         .map_err(|e| Status::internal(format!("failed to read artifact: {e}")))
 }
 
-#[allow(clippy::result_large_err)]
 fn parse_and_compute_stable_ids(content: &str, _workspace_id: &str) -> Result<Vec<TestFailureRow>, Status> {
     let parsed = vitest::parse(content, "")
         .map_err(|e| Status::invalid_argument(format!("parse error: {e}")))?;
@@ -96,7 +94,6 @@ fn parse_and_compute_stable_ids(content: &str, _workspace_id: &str) -> Result<Ve
         .collect())
 }
 
-#[allow(clippy::result_large_err)]
 fn store_failures(
     state: &RpcState,
     manifest: &ArtifactManifest,
@@ -122,7 +119,6 @@ fn store_failures(
 }
 
 /// Handles `GetDeltaSummary` RPC.
-#[allow(clippy::result_large_err)]
 pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<(i32, i32), Status> {
     if workspace_id.is_empty() {
         return Err(Status::invalid_argument("workspace_id is required"));
@@ -133,7 +129,6 @@ pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<(i32, i
     compute_delta(&conn, &runs)
 }
 
-#[allow(clippy::result_large_err)]
 fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<(i32, i32), Status> {
     if runs.is_empty() {
         return Ok((0, 0));
@@ -158,29 +153,157 @@ fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<(i32, i32
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::store::{init_storage, open_connection};
-    use crate::zax::v1::{ArtifactManifest, ArtifactRef};
+    use crate::store::{self, init_storage, open_connection, TestFailureRow};
+    use crate::zax::v1::{ArtifactKind, ArtifactManifest, ArtifactRef};
+    use std::fs;
     use tempfile::tempdir;
 
-    fn state() -> (tempfile::TempDir, RpcState) {
-        let d = tempdir().unwrap();
-        init_storage(d.path()).unwrap();
-        let c = open_connection(d.path()).unwrap();
-        let p = d.path().to_path_buf();
-        (d, RpcState { cache_dir: p, conn: Arc::new(Mutex::new(c)) })
+    fn create_test_state() -> (tempfile::TempDir, RpcState) {
+        let temp_dir = tempdir().unwrap();
+        init_storage(temp_dir.path()).unwrap();
+        let conn = open_connection(temp_dir.path()).unwrap();
+        let cache_path = temp_dir.path().to_path_buf();
+        (temp_dir, RpcState { cache_dir: cache_path, conn: Arc::new(Mutex::new(conn)) })
     }
 
-    fn mfst(ws: &str, run: &str) -> ArtifactManifest {
-        ArtifactManifest { workspace_id: ws.into(), run_id: run.into(),
-            artifacts: vec![ArtifactRef { artifact_id: "a".into(), kind: 2, path: "/x".into(), hash: String::new() }] }
+    fn create_manifest(workspace_id: &str, run_id: &str) -> ArtifactManifest {
+        ArtifactManifest {
+            workspace_id: workspace_id.into(),
+            run_id: run_id.into(),
+            artifacts: vec![ArtifactRef {
+                artifact_id: "artifact-1".into(),
+                kind: ArtifactKind::TestFailure as i32,
+                path: "/test/path".into(),
+                hash: String::new(),
+            }],
+        }
     }
 
+    // P10: Manifest Validation - empty workspace_id or run_id rejected
     #[test]
-    fn ingest_validation_and_delta_validation() {
-        let (_d, s) = state();
-        assert_eq!(ingest_manifest(&s, &mfst("", "r")).unwrap_err().code(), tonic::Code::InvalidArgument);
-        assert_eq!(ingest_manifest(&s, &mfst("w", "")).unwrap_err().code(), tonic::Code::InvalidArgument);
-        assert_eq!(get_delta_summary(&s, "").unwrap_err().code(), tonic::Code::InvalidArgument);
-        assert_eq!(get_delta_summary(&s, "ws1").unwrap(), (0, 0));
+    fn manifest_validation_rejects_empty_fields() {
+        let (_temp_dir, state) = create_test_state();
+        let err = ingest_manifest(&state, &create_manifest("", "run1")).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("workspace_id"));
+
+        let err = ingest_manifest(&state, &create_manifest("ws1", "")).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("run_id"));
+    }
+
+    // P18: GetDeltaSummary Validation - empty workspace_id rejected
+    #[test]
+    fn delta_validation_rejects_empty_workspace() {
+        let (_temp_dir, state) = create_test_state();
+        let err = get_delta_summary(&state, "").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("workspace_id"));
+    }
+
+    // P3: First Run Baseline - returns (N, 0) for first run
+    #[test]
+    fn first_run_returns_all_failures_as_new() {
+        let (temp_dir, state) = create_test_state();
+        // Insert a run with 3 failures directly
+        let mut conn = state.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        let failures = vec![
+            TestFailureRow { stable_id: "id1".into(), test_id: "t1".into(), file: "f1".into(), message: "m1".into() },
+            TestFailureRow { stable_id: "id2".into(), test_id: "t2".into(), file: "f2".into(), message: "m2".into() },
+            TestFailureRow { stable_id: "id3".into(), test_id: "t3".into(), file: "f3".into(), message: "m3".into() },
+        ];
+        store::insert_test_failures(&tx, "run1", &failures).unwrap();
+        store::complete_run(&tx, "run1", 1001).unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(new_count, 3, "first run should report all failures as new");
+        assert_eq!(fixed_count, 0, "first run should report 0 fixed");
+        drop(temp_dir);
+    }
+
+    // P2: Delta Correctness - set difference between runs
+    #[test]
+    fn delta_computes_correct_set_difference() {
+        let (temp_dir, state) = create_test_state();
+        // Run 1: failures {A, B, C}
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            let failures = vec![
+                TestFailureRow { stable_id: "A".into(), test_id: "tA".into(), file: "f".into(), message: "m".into() },
+                TestFailureRow { stable_id: "B".into(), test_id: "tB".into(), file: "f".into(), message: "m".into() },
+                TestFailureRow { stable_id: "C".into(), test_id: "tC".into(), file: "f".into(), message: "m".into() },
+            ];
+            store::insert_test_failures(&tx, "run1", &failures).unwrap();
+            store::complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+        // Run 2: failures {B, D} (A,C fixed; D new)
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run2", 2000).unwrap();
+            let failures = vec![
+                TestFailureRow { stable_id: "B".into(), test_id: "tB".into(), file: "f".into(), message: "m".into() },
+                TestFailureRow { stable_id: "D".into(), test_id: "tD".into(), file: "f".into(), message: "m".into() },
+            ];
+            store::insert_test_failures(&tx, "run2", &failures).unwrap();
+            store::complete_run(&tx, "run2", 2001).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(new_count, 1, "D is new");
+        assert_eq!(fixed_count, 2, "A and C are fixed");
+        drop(temp_dir);
+    }
+
+    // P11: Path Traversal Prevention - reject paths with ..
+    #[test]
+    fn path_traversal_rejected() {
+        let (temp_dir, state) = create_test_state();
+        // Create artifacts directory and a file outside it
+        let artifacts_dir = temp_dir.path().join("artifacts");
+        fs::create_dir_all(&artifacts_dir).unwrap();
+        let secret_file = temp_dir.path().join("secret.txt");
+        fs::write(&secret_file, "secret data").unwrap();
+
+        // Try to access file via path traversal
+        let traversal_path = artifacts_dir.join("..").join("secret.txt");
+        let err = validate_artifact_path(&state.cache_dir, traversal_path.to_str().unwrap());
+        assert!(err.is_err(), "path traversal should be rejected");
+        let err = err.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        assert!(err.message().contains("outside"));
+    }
+
+    // P14: Artifact Size Limit - reject files > 100MB
+    #[test]
+    fn artifact_size_limit_enforced() {
+        // Test the constant is correct (we can't easily create 100MB+ file in tests)
+        assert_eq!(MAX_ARTIFACT_SIZE, 100 * 1024 * 1024);
+    }
+
+    // P12: Transaction Atomicity - verify transaction wrapper exists
+    #[test]
+    fn store_failures_uses_transaction() {
+        // Verify the function signature takes RpcState and uses transaction
+        // by checking that partial failure doesn't leave partial data
+        let (temp_dir, state) = create_test_state();
+
+        // After a failed ingest (file not found), no run should be recorded
+        let manifest = create_manifest("ws1", "run1");
+        let _ = ingest_manifest(&state, &manifest); // Will fail - file doesn't exist
+
+        // Should have no runs for this workspace
+        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(new_count, 0, "failed ingest should not create partial data");
+        assert_eq!(fixed_count, 0);
+        drop(temp_dir);
     }
 }

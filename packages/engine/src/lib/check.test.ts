@@ -2,7 +2,7 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
-import { runCheck, isCheckInProgress } from "./check.js";
+import { runCheck, isCheckInProgress, CheckError } from "./check.js";
 
 describe("check module", () => {
   let cacheDir: string;
@@ -80,6 +80,36 @@ describe("check module", () => {
 
       // After completion, should not be in progress
       expect(isCheckInProgress()).toBe(false);
+    });
+  });
+
+  // P6/P7: CheckError codes for timeout handling
+  describe("CheckError codes", () => {
+    test("VITEST_TIMEOUT code exists for P6 timeout enforcement", () => {
+      const err = new CheckError("VITEST_TIMEOUT");
+      expect(err.code).toBe("VITEST_TIMEOUT");
+      expect(err.name).toBe("CheckError");
+    });
+
+    test("RPC_TIMEOUT code exists for gRPC timeout", () => {
+      const err = new CheckError("RPC_TIMEOUT");
+      expect(err.code).toBe("RPC_TIMEOUT");
+    });
+
+    test("CONCURRENT_CHECK code exists for P7 concurrent check prevention", () => {
+      const err = new CheckError("CONCURRENT_CHECK");
+      expect(err.code).toBe("CONCURRENT_CHECK");
+    });
+
+    test("CheckError includes message when provided", () => {
+      const err = new CheckError("VITEST_FAILED", "custom message");
+      expect(err.code).toBe("VITEST_FAILED");
+      expect(err.message).toBe("custom message");
+    });
+
+    test("CheckError uses code as message when message not provided", () => {
+      const err = new CheckError("INTERNAL");
+      expect(err.message).toBe("INTERNAL");
     });
   });
 });

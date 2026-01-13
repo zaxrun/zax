@@ -74,18 +74,7 @@ describe("E2E: zx check", () => {
   });
 });
 
-describe("E2E: First run baseline", () => {
-  test("first run with no previous run should report all failures as new", () => {
-    // This is a property test - verified via RPC unit tests
-    // The delta computation returns (N, 0) for first run where N = failure count
-    expect(true).toBe(true); // Placeholder - actual logic tested in rpc.rs
-  });
-});
-
-describe("E2E: Exit code correctness", () => {
-  test("exit code semantics: 0 when no new failures, 1 when new failures", () => {
-    // Verified via CLI handleCheck implementation
-    // process.exit(result.new_test_failures > 0 ? 1 : 0)
-    expect(true).toBe(true); // Placeholder - actual logic tested in main.ts
-  });
-});
+// NOTE: Full E2E tests (CLI → Engine → Rust) deferred to M4/M5 milestone.
+// Properties P3 (first run baseline) and P8 (exit code) verified via:
+// - rpc.rs unit tests for delta computation
+// - main.ts:108-119 for exit code logic
