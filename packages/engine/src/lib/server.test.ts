@@ -6,10 +6,12 @@ import { createEngineServer } from "./server.js";
 
 describe("createEngineServer", () => {
   let socketPath: string;
+  let cacheDir: string;
   let server: ReturnType<typeof createEngineServer>;
 
   beforeEach(() => {
     socketPath = join(tmpdir(), `zax-test-${Date.now()}-${Math.random()}.sock`);
+    cacheDir = join(tmpdir(), `zax-cache-${Date.now()}-${Math.random()}`);
   });
 
   afterEach(() => {
@@ -31,7 +33,7 @@ describe("createEngineServer", () => {
   describe("GET /health", () => {
     test("returns 200 with status ok", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/health");
       expect(response.status).toBe(200);
@@ -40,7 +42,7 @@ describe("createEngineServer", () => {
 
     test("returns Content-Type application/json", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/health");
       expect(response.headers.get("Content-Type")).toBe("application/json");
@@ -50,7 +52,7 @@ describe("createEngineServer", () => {
   describe("GET /version", () => {
     test("returns 200 with version when Rust client succeeds", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "0.1.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.status).toBe(200);
@@ -59,7 +61,7 @@ describe("createEngineServer", () => {
 
     test("returns 502 when Rust client fails", async () => {
       const mockClient = { ping: mock(() => Promise.reject(new Error("Connection refused"))) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.status).toBe(502);
@@ -70,7 +72,7 @@ describe("createEngineServer", () => {
       const abortError = new Error("Aborted");
       abortError.name = "AbortError";
       const mockClient = { ping: mock(() => Promise.reject(abortError)) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.status).toBe(504);
@@ -79,7 +81,7 @@ describe("createEngineServer", () => {
 
     test("returns Content-Type application/json on success", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.headers.get("Content-Type")).toBe("application/json");
@@ -87,7 +89,7 @@ describe("createEngineServer", () => {
 
     test("returns Content-Type application/json on error", async () => {
       const mockClient = { ping: mock(() => Promise.reject(new Error("fail"))) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.headers.get("Content-Type")).toBe("application/json");
@@ -97,7 +99,7 @@ describe("createEngineServer", () => {
   describe("unknown routes", () => {
     test("returns 404 for unknown path", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/unknown");
       expect(response.status).toBe(404);
@@ -106,7 +108,7 @@ describe("createEngineServer", () => {
 
     test("returns 404 for POST to /health", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, rustClient: mockClient as never });
+      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/health", "POST");
       expect(response.status).toBe(404);

@@ -77,6 +77,14 @@ interface CheckRequestBody {
   workspace_root: string;
 }
 
+async function parseCheckRequest(req: Request): Promise<CheckRequestBody | null> {
+  try {
+    return (await req.json()) as CheckRequestBody;
+  } catch {
+    return null;
+  }
+}
+
 async function handleCheck(
   req: Request,
   cacheDir: string,
@@ -85,18 +93,14 @@ async function handleCheck(
 ): Promise<Response> {
   if (isCheckInProgress()) {
     return new Response(JSON.stringify({ error: "check already in progress" }), {
-      status: 409,
-      headers,
+      status: 409, headers,
     });
   }
 
-  let body: CheckRequestBody;
-  try {
-    body = (await req.json()) as CheckRequestBody;
-  } catch {
+  const body = await parseCheckRequest(req);
+  if (!body) {
     return new Response(JSON.stringify({ error: "invalid request body" }), {
-      status: 400,
-      headers,
+      status: 400, headers,
     });
   }
 
@@ -107,14 +111,10 @@ async function handleCheck(
       workspaceRoot: body.workspace_root,
       rustClient: client,
     });
-
-    return new Response(
-      JSON.stringify({
-        new_test_failures: result.newTestFailures,
-        fixed_test_failures: result.fixedTestFailures,
-      }),
-      { headers }
-    );
+    return new Response(JSON.stringify({
+      new_test_failures: result.newTestFailures,
+      fixed_test_failures: result.fixedTestFailures,
+    }), { headers });
   } catch (err) {
     return mapCheckError(err as CheckError, headers);
   }

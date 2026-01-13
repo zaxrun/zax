@@ -153,3 +153,34 @@ fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<(i32, i32
     let fixed_count = previous_ids.difference(&current_ids).count() as i32;
     Ok((new_count, fixed_count))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::store::{init_storage, open_connection};
+    use crate::zax::v1::{ArtifactManifest, ArtifactRef};
+    use tempfile::tempdir;
+
+    fn state() -> (tempfile::TempDir, RpcState) {
+        let d = tempdir().unwrap();
+        init_storage(d.path()).unwrap();
+        let c = open_connection(d.path()).unwrap();
+        let p = d.path().to_path_buf();
+        (d, RpcState { cache_dir: p, conn: Arc::new(Mutex::new(c)) })
+    }
+
+    fn mfst(ws: &str, run: &str) -> ArtifactManifest {
+        ArtifactManifest { workspace_id: ws.into(), run_id: run.into(),
+            artifacts: vec![ArtifactRef { artifact_id: "a".into(), kind: 2, path: "/x".into(), hash: String::new() }] }
+    }
+
+    #[test]
+    fn ingest_validation_and_delta_validation() {
+        let (_d, s) = state();
+        assert_eq!(ingest_manifest(&s, &mfst("", "r")).unwrap_err().code(), tonic::Code::InvalidArgument);
+        assert_eq!(ingest_manifest(&s, &mfst("w", "")).unwrap_err().code(), tonic::Code::InvalidArgument);
+        assert_eq!(get_delta_summary(&s, "").unwrap_err().code(), tonic::Code::InvalidArgument);
+        assert_eq!(get_delta_summary(&s, "ws1").unwrap(), (0, 0));
+    }
+}
