@@ -282,11 +282,29 @@ mod tests {
         assert!(err.message().contains("outside"));
     }
 
-    // P14: Artifact Size Limit - reject files > 100MB
+    // P14: Artifact Size Limit - verify constant and read_artifact_file behavior
     #[test]
-    fn artifact_size_limit_enforced() {
-        // Test the constant is correct (we can't easily create 100MB+ file in tests)
+    fn artifact_size_limit_constant_is_100mb() {
         assert_eq!(MAX_ARTIFACT_SIZE, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn read_artifact_file_succeeds_for_small_file() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("small.json");
+        fs::write(&file_path, r#"{"test": "data"}"#).unwrap();
+
+        let content = read_artifact_file(&file_path).unwrap();
+        assert_eq!(content, r#"{"test": "data"}"#);
+    }
+
+    #[test]
+    fn read_artifact_file_fails_for_missing_file() {
+        let temp_dir = tempdir().unwrap();
+        let missing = temp_dir.path().join("nonexistent.json");
+
+        let err = read_artifact_file(&missing).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
     // P12: Transaction Atomicity - verify transaction wrapper exists
