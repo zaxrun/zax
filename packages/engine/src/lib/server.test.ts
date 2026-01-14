@@ -1,8 +1,8 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEngineServer } from "./server.js";
+import { createEngineServer, isValidWorkspaceId, isValidWorkspaceRoot } from "./server.js";
 
 describe("createEngineServer", () => {
   let socketPath: string;
@@ -113,5 +113,64 @@ describe("createEngineServer", () => {
       const response = await fetch("/health", "POST");
       expect(response.status).toBe(404);
     });
+  });
+});
+
+// Security: Input validation tests
+describe("isValidWorkspaceId", () => {
+  test("accepts valid 16-char hex string", () => {
+    expect(isValidWorkspaceId("0123456789abcdef")).toBe(true);
+    expect(isValidWorkspaceId("4191cb01c7689684")).toBe(true);
+  });
+
+  test("rejects uppercase hex", () => {
+    expect(isValidWorkspaceId("0123456789ABCDEF")).toBe(false);
+  });
+
+  test("rejects wrong length", () => {
+    expect(isValidWorkspaceId("0123456789abcde")).toBe(false);  // 15 chars
+    expect(isValidWorkspaceId("0123456789abcdef0")).toBe(false); // 17 chars
+    expect(isValidWorkspaceId("")).toBe(false);
+  });
+
+  test("rejects non-hex characters", () => {
+    expect(isValidWorkspaceId("0123456789abcdeg")).toBe(false);
+    expect(isValidWorkspaceId("workspace-id-123")).toBe(false);
+  });
+});
+
+// Note: Rate limiting is tested via integration - the checkRateLimit function
+// returns 429 with Retry-After header when requests are too rapid.
+// Full test would require mocking Date.now() which adds complexity.
+// The implementation uses CHECK_RATE_LIMIT_MS (1 second) cooldown.
+
+describe("isValidWorkspaceRoot", () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `zax-ws-test-${Date.now()}-${Math.random()}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test("accepts existing directory", () => {
+    expect(isValidWorkspaceRoot(testDir)).toBe(true);
+  });
+
+  test("rejects non-existent path", () => {
+    expect(isValidWorkspaceRoot("/nonexistent/path/12345")).toBe(false);
+  });
+
+  test("rejects empty string", () => {
+    expect(isValidWorkspaceRoot("")).toBe(false);
+  });
+
+  test("rejects file path (not directory)", async () => {
+    const filePath = join(testDir, "file.txt");
+    await Bun.write(filePath, "test");
+    expect(isValidWorkspaceRoot(filePath)).toBe(false);
   });
 });

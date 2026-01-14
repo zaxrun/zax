@@ -124,8 +124,8 @@ fn extract_message(failure_messages: &[String]) -> String {
 }
 
 fn truncate_message(message: &str) -> String {
-    if message.len() > MAX_MESSAGE_LENGTH {
-        message[..MAX_MESSAGE_LENGTH].to_string()
+    if message.chars().count() > MAX_MESSAGE_LENGTH {
+        format!("{}...", message.chars().take(MAX_MESSAGE_LENGTH - 3).collect::<String>())
     } else {
         message.to_string()
     }
@@ -168,10 +168,19 @@ mod tests {
 
     #[test]
     fn parse_truncates_and_handles_empty_messages() {
-        // Truncation
+        // Truncation - verify length and "..." suffix
         let long = "x".repeat(1500);
         let json = make_json("/ws/t.ts", "failed", None, &assertion(&[], "t", "failed", &long));
-        assert_eq!(parse(&json, "/ws").unwrap()[0].message.len(), MAX_MESSAGE_LENGTH);
+        let result = parse(&json, "/ws").unwrap();
+        assert_eq!(result[0].message.len(), MAX_MESSAGE_LENGTH);
+        assert!(result[0].message.ends_with("..."));
+
+        // Short message - no truncation, no "..."
+        let short = "short error";
+        let json2 = make_json("/ws/t.ts", "failed", None, &assertion(&[], "t", "failed", short));
+        let result2 = parse(&json2, "/ws").unwrap();
+        assert_eq!(result2[0].message, short);
+        assert!(!result2[0].message.ends_with("..."));
 
         // Empty failureMessages
         let empty = r#"{"testResults":[{"name":"/ws/t.ts","status":"failed","assertionResults":[{"ancestorTitles":[],"title":"t","status":"failed","failureMessages":[]}]}]}"#;

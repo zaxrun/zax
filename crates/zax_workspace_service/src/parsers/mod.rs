@@ -1,5 +1,6 @@
 //! Artifact parsers for extracting test failures and findings.
 
+pub mod eslint;
 pub mod vitest;
 
 use thiserror::Error;

@@ -24,6 +24,19 @@ pub struct TestFailureRow {
     pub message: String,
 }
 
+/// A finding to insert into the database.
+pub struct FindingRow {
+    pub stable_id: String,
+    pub tool: String,
+    pub rule: String,
+    pub file: String,
+    pub start_line: i32,
+    pub start_column: i32,
+    pub end_line: i32,
+    pub end_column: i32,
+    pub message: String,
+}
+
 /// A completed run for delta computation.
 pub struct RunInfo {
     pub run_id: String,
@@ -104,6 +117,44 @@ pub fn get_recent_runs(
 /// Gets all `stable_ids` for a given run.
 pub fn get_stable_ids_for_run(conn: &Connection, run_id: &str) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT stable_id FROM test_failures WHERE run_id = ?1")?;
+    let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+}
+
+/// Inserts findings in batch.
+pub fn insert_findings(
+    tx: &Transaction,
+    run_id: &str,
+    findings: &[FindingRow],
+) -> Result<(), StoreError> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO findings (run_id, stable_id, tool, rule, file, \
+         start_line, start_column, end_line, end_column, message) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    for f in findings {
+        stmt.execute(params![
+            run_id,
+            f.stable_id,
+            f.tool,
+            f.rule,
+            f.file,
+            f.start_line,
+            f.start_column,
+            f.end_line,
+            f.end_column,
+            f.message
+        ])?;
+    }
+    Ok(())
+}
+
+/// Gets all finding `stable_ids` for a given run.
+pub fn get_finding_stable_ids_for_run(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT stable_id FROM findings WHERE run_id = ?1")?;
     let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
 }
@@ -191,5 +242,105 @@ mod tests {
         fs::create_dir(&corrupt_db).unwrap();
         fs::write(corrupt_db.join("db.sqlite"), b"garbage").unwrap();
         assert!(init_storage(&corrupt_db).is_err());
+    }
+
+    #[test]
+    fn schema_has_findings_table_and_index() {
+        let (_dir, conn) = setup();
+        // Findings table exists with correct columns
+        conn.prepare(
+            "SELECT stable_id, tool, rule, file, start_line, start_column, \
+             end_line, end_column, message FROM findings LIMIT 0",
+        )
+        .unwrap();
+        // Index exists
+        let idx_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND \
+                 name = 'idx_findings_run_stable'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
+    }
+
+    #[test]
+    fn insert_and_query_findings() {
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        let findings = vec![FindingRow {
+            stable_id: "finding123".into(),
+            tool: "eslint".into(),
+            rule: "no-unused-vars".into(),
+            file: "src/a.js".into(),
+            start_line: 10,
+            start_column: 5,
+            end_line: 10,
+            end_column: 15,
+            message: "x is unused".into(),
+        }];
+        insert_findings(&tx, "run1", &findings).unwrap();
+        tx.commit().unwrap();
+
+        let ids = get_finding_stable_ids_for_run(&conn, "run1").unwrap();
+        assert_eq!(ids, vec!["finding123"]);
+    }
+
+    // P12: Migration Safety - data preserved on re-run
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn migration_preserves_existing_data() {
+        let dir = tempdir().unwrap();
+        init_storage(dir.path()).unwrap();
+
+        // Insert test data
+        {
+            let mut conn = open_connection(dir.path()).unwrap();
+            let tx = conn.transaction().unwrap();
+            insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            insert_test_failures(
+                &tx,
+                "run1",
+                &[TestFailureRow {
+                    stable_id: "tf1".into(),
+                    test_id: "t1".into(),
+                    file: "f.ts".into(),
+                    message: "m".into(),
+                }],
+            )
+            .unwrap();
+            insert_findings(
+                &tx,
+                "run1",
+                &[FindingRow {
+                    stable_id: "f1".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f.js".into(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    message: "m".into(),
+                }],
+            )
+            .unwrap();
+            complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Re-run migration (simulates upgrade)
+        init_storage(dir.path()).unwrap();
+
+        // Verify data preserved
+        let conn = open_connection(dir.path()).unwrap();
+        let runs = get_recent_runs(&conn, "ws1", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        let tf_ids = get_stable_ids_for_run(&conn, "run1").unwrap();
+        assert_eq!(tf_ids, vec!["tf1"]);
+        let f_ids = get_finding_stable_ids_for_run(&conn, "run1").unwrap();
+        assert_eq!(f_ids, vec!["f1"]);
     }
 }

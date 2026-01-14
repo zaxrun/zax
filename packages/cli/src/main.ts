@@ -1,7 +1,8 @@
-import { existsSync, unlinkSync, writeFileSync, openSync, closeSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { computeWorkspaceId, getCacheDir, ensureCacheDir } from "./lib/workspace.js";
 import { connectToEngine, getVersion, postCheck } from "./lib/engine-client.js";
+import { tryAcquireLock, releaseLock, acquireLockWithTimeout } from "./lib/lock.js";
 
 const SOCKET_WAIT_TIMEOUT_MS = 10000;
 const SOCKET_POLL_INTERVAL_MS = 100;
@@ -19,6 +20,31 @@ function printUsage(): void {
 
 function printError(message: string): void {
   process.stderr.write(`Error: ${message}\n`);
+}
+
+interface CheckResult {
+  new_test_failures: number;
+  fixed_test_failures: number;
+  new_findings: number;
+  fixed_findings: number;
+  eslint_skipped?: boolean;
+  eslint_skip_reason?: string;
+}
+
+export function formatCheckOutput(result: CheckResult): string {
+  const failurePart = `${result.new_test_failures} new failures, ${result.fixed_test_failures} fixed`;
+  const findingPart = `${result.new_findings} new findings, ${result.fixed_findings} fixed`;
+  return `${failurePart} | ${findingPart}`;
+}
+
+export function computeExitCode(result: CheckResult): number {
+  return (result.new_test_failures > 0 || result.new_findings > 0) ? 1 : 0;
+}
+
+/** Formats skip message for ESLint. Returns undefined if not skipped. */
+export function formatSkipMessage(result: CheckResult): string | undefined {
+  if (!result.eslint_skipped) { return undefined; }
+  return `eslint: skipped (${result.eslint_skip_reason ?? "unknown"})`;
 }
 
 function getEnginePath(): string {
@@ -41,16 +67,6 @@ async function waitForSocket(socketPath: string): Promise<boolean> {
   return false;
 }
 
-function acquireLock(lockPath: string): number {
-  writeFileSync(lockPath, "", { mode: 0o600 });
-  const fd = openSync(lockPath, "r");
-  return fd;
-}
-
-function releaseLock(fd: number): void {
-  closeSync(fd);
-}
-
 async function spawnEngine(cacheDir: string): Promise<void> {
   const enginePath = getEnginePath();
 
@@ -61,9 +77,9 @@ async function spawnEngine(cacheDir: string): Promise<void> {
 
 async function ensureEngine(cacheDir: string): Promise<string> {
   const socketPath = join(cacheDir, "zax.sock");
-  const lockPath = join(cacheDir, "engine.lock");
+  const lockDir = join(cacheDir, "engine.lock");
 
-  const fd = acquireLock(lockPath);
+  await acquireLockWithTimeout(lockDir);
 
   try {
     if (existsSync(socketPath)) {
@@ -84,7 +100,7 @@ async function ensureEngine(cacheDir: string): Promise<string> {
 
     return socketPath;
   } finally {
-    releaseLock(fd);
+    releaseLock(lockDir);
   }
 }
 
@@ -109,11 +125,14 @@ async function handleCheck(cacheDir: string, workspaceId: string, cwd: string): 
   try {
     const socketPath = await ensureEngine(cacheDir);
     const result = await postCheck(socketPath, workspaceId, cwd);
-    console.log(`${result.new_test_failures} new, ${result.fixed_test_failures} fixed`);
-    process.exit(result.new_test_failures > 0 ? 1 : 0);
+
+    const skipMsg = formatSkipMessage(result);
+    if (skipMsg) { console.log(skipMsg); }
+
+    console.log(formatCheckOutput(result));
+    process.exit(computeExitCode(result));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    printError(message);
+    printError(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }
@@ -128,8 +147,7 @@ async function main(): Promise<void> {
   try {
     ensureCacheDir(cacheDir);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    printError(message);
+    printError(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 
@@ -159,4 +177,10 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-main();
+// Re-export lock functions for tests
+export { tryAcquireLock, releaseLock } from "./lib/lock.js";
+
+// Only run when executed directly, not when imported as a module
+if (import.meta.main) {
+  main();
+}

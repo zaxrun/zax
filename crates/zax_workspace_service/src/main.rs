@@ -56,12 +56,12 @@ impl WorkspaceService for WorkspaceServiceImpl {
         request: Request<GetDeltaSummaryRequest>,
     ) -> Result<Response<GetDeltaSummaryResponse>, Status> {
         let req = request.into_inner();
-        let (new_failures, fixed_failures) = rpc::get_delta_summary(&self.state, &req.workspace_id)?;
+        let result = rpc::get_delta_summary(&self.state, &req.workspace_id)?;
         Ok(Response::new(GetDeltaSummaryResponse {
-            new_findings: 0,
-            fixed_findings: 0,
-            new_test_failures: new_failures,
-            fixed_test_failures: fixed_failures,
+            new_findings: result.new_findings,
+            fixed_findings: result.fixed_findings,
+            new_test_failures: result.new_test_failures,
+            fixed_test_failures: result.fixed_test_failures,
         }))
     }
 }

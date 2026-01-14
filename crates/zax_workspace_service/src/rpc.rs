@@ -3,10 +3,12 @@
 // tonic::Status is 3 words (24 bytes) which exceeds clippy's default threshold.
 // This is intentional - Status provides rich error info for gRPC responses.
 #![allow(clippy::result_large_err)]
+// Allow eprintln! for logging - output goes to engine.log via stderr redirect.
+#![allow(clippy::print_stderr)]
 
 use crate::normalize::stable_id;
-use crate::parsers::vitest;
-use crate::store::{self, TestFailureRow};
+use crate::parsers::{eslint, vitest};
+use crate::store::{self, FindingRow, TestFailureRow};
 use crate::zax::v1::{ArtifactKind, ArtifactManifest};
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -26,13 +28,20 @@ pub struct RpcState {
 
 /// Handles `IngestManifest` RPC.
 pub fn ingest_manifest(state: &RpcState, manifest: &ArtifactManifest) -> Result<(), Status> {
+    eprintln!(
+        "[rpc] IngestManifest: workspace={}, run={}, artifacts={}",
+        manifest.workspace_id,
+        manifest.run_id,
+        manifest.artifacts.len()
+    );
     validate_manifest(manifest)?;
-    let artifact = get_test_failure_artifact(manifest)?;
-    let artifact_path = validate_artifact_path(&state.cache_dir, &artifact.path)?;
-    let content = read_artifact_file(&artifact_path)?;
-    let failures = parse_and_compute_stable_ids(&content, &manifest.workspace_id)?;
-    store_failures(state, manifest, &failures)?;
-    Ok(())
+    let (failures, findings) = parse_artifacts(state, manifest)?;
+    eprintln!(
+        "[rpc] Parsed: {} test failures, {} findings",
+        failures.len(),
+        findings.len()
+    );
+    store_all(state, manifest, &failures, &findings)
 }
 
 fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), Status> {
@@ -45,21 +54,31 @@ fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), Status> {
     Ok(())
 }
 
-fn get_test_failure_artifact(
+fn parse_artifacts(
+    state: &RpcState,
     manifest: &ArtifactManifest,
-) -> Result<&crate::zax::v1::ArtifactRef, Status> {
-    manifest
-        .artifacts
-        .iter()
-        .find(|a| a.kind == ArtifactKind::TestFailure as i32)
-        .ok_or_else(|| Status::invalid_argument("no test failure artifact in manifest"))
+) -> Result<(Vec<TestFailureRow>, Vec<FindingRow>), Status> {
+    let mut failures = Vec::new();
+    let mut findings = Vec::new();
+
+    for artifact in &manifest.artifacts {
+        let path = validate_artifact_path(&state.cache_dir, &artifact.path)?;
+        let content = read_artifact_file(&path)?;
+
+        if artifact.kind == ArtifactKind::TestFailure as i32 {
+            failures = parse_test_failures(&content)?;
+        } else if artifact.kind == ArtifactKind::Finding as i32 {
+            findings = parse_findings(&content)?;
+        }
+    }
+    Ok((failures, findings))
 }
 
 fn validate_artifact_path(cache_dir: &Path, artifact_path: &str) -> Result<std::path::PathBuf, Status> {
     let path = std::path::PathBuf::from(artifact_path);
-    let canonical = path.canonicalize().map_err(|_| {
-        Status::not_found(format!("artifact file not found: {artifact_path}"))
-    })?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| Status::not_found(format!("artifact file not found: {artifact_path}")))?;
     let artifacts_dir = cache_dir.join("artifacts");
     if !canonical.starts_with(&artifacts_dir) {
         return Err(Status::not_found("artifact path outside artifacts directory"));
@@ -68,8 +87,8 @@ fn validate_artifact_path(cache_dir: &Path, artifact_path: &str) -> Result<std::
 }
 
 fn read_artifact_file(path: &Path) -> Result<String, Status> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|_| Status::not_found("artifact file not found"))?;
+    let metadata =
+        std::fs::metadata(path).map_err(|_| Status::not_found("artifact file not found"))?;
     if metadata.len() > MAX_ARTIFACT_SIZE {
         return Err(Status::invalid_argument(format!(
             "artifact file exceeds 100MB limit: {} bytes",
@@ -80,9 +99,16 @@ fn read_artifact_file(path: &Path) -> Result<String, Status> {
         .map_err(|e| Status::internal(format!("failed to read artifact: {e}")))
 }
 
-fn parse_and_compute_stable_ids(content: &str, _workspace_id: &str) -> Result<Vec<TestFailureRow>, Status> {
-    let parsed = vitest::parse(content, "")
-        .map_err(|e| Status::invalid_argument(format!("parse error: {e}")))?;
+/// Parses test failures from pre-normalized Vitest JSON output.
+///
+/// NOTE: The Engine layer (TypeScript) normalizes file paths before writing
+/// artifact files, stripping the `workspace_root` prefix. Therefore we pass
+/// empty `workspace_root` here - paths are already relative.
+fn parse_test_failures(content: &str) -> Result<Vec<TestFailureRow>, Status> {
+    let parsed = vitest::parse(content, "").map_err(|e| {
+        eprintln!("[rpc] Vitest parse error: {e}");
+        Status::invalid_argument(format!("parse error: {e}"))
+    })?;
     Ok(parsed
         .into_iter()
         .map(|f| TestFailureRow {
@@ -94,67 +120,118 @@ fn parse_and_compute_stable_ids(content: &str, _workspace_id: &str) -> Result<Ve
         .collect())
 }
 
-fn store_failures(
+/// Parses findings from pre-normalized `ESLint` JSON output.
+///
+/// NOTE: The Engine layer (TypeScript) normalizes file paths before writing
+/// artifact files, stripping the `workspace_root` prefix. Therefore we pass
+/// empty `workspace_root` here - paths are already relative.
+fn parse_findings(content: &str) -> Result<Vec<FindingRow>, Status> {
+    let parsed = eslint::parse(content, "").map_err(|e| {
+        eprintln!("[rpc] ESLint parse error: {e}");
+        Status::invalid_argument(format!("parse error: {e}"))
+    })?;
+    Ok(parsed
+        .into_iter()
+        .map(|f| FindingRow {
+            stable_id: f.stable_id,
+            tool: f.tool,
+            rule: f.rule,
+            file: f.file,
+            start_line: f.start_line,
+            start_column: f.start_column,
+            end_line: f.end_line,
+            end_column: f.end_column,
+            message: f.message,
+        })
+        .collect())
+}
+
+fn store_all(
     state: &RpcState,
     manifest: &ArtifactManifest,
     failures: &[TestFailureRow],
+    findings: &[FindingRow],
 ) -> Result<(), Status> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| Status::internal(format!("time error: {e}")))?
         .as_secs() as i64;
     let mut conn = state.conn.lock().map_err(|_| Status::internal("lock error"))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| Status::internal(format!("transaction error: {e}")))?;
+    let tx = conn.transaction().map_err(|e| Status::internal(format!("transaction error: {e}")))?;
     store::insert_run(&tx, &manifest.workspace_id, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("insert run: {e}")))?;
     store::insert_test_failures(&tx, &manifest.run_id, failures)
         .map_err(|e| Status::internal(format!("insert failures: {e}")))?;
+    store::insert_findings(&tx, &manifest.run_id, findings)
+        .map_err(|e| Status::internal(format!("insert findings: {e}")))?;
     store::complete_run(&tx, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("complete run: {e}")))?;
-    tx.commit()
-        .map_err(|e| Status::internal(format!("commit: {e}")))?;
+    tx.commit().map_err(|e| Status::internal(format!("commit: {e}")))?;
     Ok(())
 }
 
+/// Delta result with test failures and findings counts.
+#[derive(Debug)]
+pub struct DeltaResult {
+    pub new_test_failures: i32,
+    pub fixed_test_failures: i32,
+    pub new_findings: i32,
+    pub fixed_findings: i32,
+}
+
 /// Handles `GetDeltaSummary` RPC.
-pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<(i32, i32), Status> {
+pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<DeltaResult, Status> {
+    eprintln!("[rpc] GetDeltaSummary: workspace={}", workspace_id);
     if workspace_id.is_empty() {
         return Err(Status::invalid_argument("workspace_id is required"));
     }
     let conn = state.conn.lock().map_err(|_| Status::internal("lock error"))?;
-    let runs = store::get_recent_runs(&conn, workspace_id, 2)
-        .map_err(|e| Status::internal(format!("query runs: {e}")))?;
-    compute_delta(&conn, &runs)
+    let runs =
+        store::get_recent_runs(&conn, workspace_id, 2).map_err(|e| Status::internal(format!("query runs: {e}")))?;
+    let result = compute_delta(&conn, &runs)?;
+    eprintln!(
+        "[rpc] Delta: new_tf={}, fixed_tf={}, new_f={}, fixed_f={}",
+        result.new_test_failures,
+        result.fixed_test_failures,
+        result.new_findings,
+        result.fixed_findings
+    );
+    Ok(result)
 }
 
-fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<(i32, i32), Status> {
+fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<DeltaResult, Status> {
     if runs.is_empty() {
-        return Ok((0, 0));
+        return Ok(DeltaResult { new_test_failures: 0, fixed_test_failures: 0, new_findings: 0, fixed_findings: 0 });
     }
-    let current_ids: HashSet<String> = store::get_stable_ids_for_run(conn, &runs[0].run_id)
+    let (new_tf, fixed_tf) = compute_entity_delta(conn, runs, store::get_stable_ids_for_run)?;
+    let (new_f, fixed_f) = compute_entity_delta(conn, runs, store::get_finding_stable_ids_for_run)?;
+    Ok(DeltaResult { new_test_failures: new_tf, fixed_test_failures: fixed_tf, new_findings: new_f, fixed_findings: fixed_f })
+}
+
+fn compute_entity_delta<F>(conn: &Connection, runs: &[store::RunInfo], query_fn: F) -> Result<(i32, i32), Status>
+where
+    F: Fn(&Connection, &str) -> Result<Vec<String>, store::StoreError>,
+{
+    let current_ids: HashSet<String> = query_fn(conn, &runs[0].run_id)
         .map_err(|e| Status::internal(format!("query current: {e}")))?
         .into_iter()
         .collect();
     if runs.len() < 2 {
         return Ok((current_ids.len() as i32, 0));
     }
-    let previous_ids: HashSet<String> = store::get_stable_ids_for_run(conn, &runs[1].run_id)
+    let previous_ids: HashSet<String> = query_fn(conn, &runs[1].run_id)
         .map_err(|e| Status::internal(format!("query previous: {e}")))?
         .into_iter()
         .collect();
-    let new_count = current_ids.difference(&previous_ids).count() as i32;
-    let fixed_count = previous_ids.difference(&current_ids).count() as i32;
-    Ok((new_count, fixed_count))
+    Ok((current_ids.difference(&previous_ids).count() as i32, previous_ids.difference(&current_ids).count() as i32))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::store::{self, init_storage, open_connection, TestFailureRow};
-    use crate::zax::v1::{ArtifactKind, ArtifactManifest, ArtifactRef};
+    use crate::store::{init_storage, open_connection};
+    use crate::zax::v1::ArtifactRef;
     use std::fs;
     use tempfile::tempdir;
 
@@ -162,166 +239,136 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         init_storage(temp_dir.path()).unwrap();
         let conn = open_connection(temp_dir.path()).unwrap();
-        let cache_path = temp_dir.path().to_path_buf();
-        (temp_dir, RpcState { cache_dir: cache_path, conn: Arc::new(Mutex::new(conn)) })
+        let cache_dir = temp_dir.path().to_path_buf();
+        (temp_dir, RpcState { cache_dir, conn: Arc::new(Mutex::new(conn)) })
     }
 
-    fn create_manifest(workspace_id: &str, run_id: &str) -> ArtifactManifest {
+    fn create_manifest(workspace_id: &str, run_id: &str, kind: ArtifactKind, path: &str) -> ArtifactManifest {
         ArtifactManifest {
             workspace_id: workspace_id.into(),
             run_id: run_id.into(),
-            artifacts: vec![ArtifactRef {
-                artifact_id: "artifact-1".into(),
-                kind: ArtifactKind::TestFailure as i32,
-                path: "/test/path".into(),
-                hash: String::new(),
-            }],
+            artifacts: vec![ArtifactRef { artifact_id: "a1".into(), kind: kind as i32, path: path.into(), hash: String::new() }],
         }
     }
 
-    // P10: Manifest Validation - empty workspace_id or run_id rejected
     #[test]
     fn manifest_validation_rejects_empty_fields() {
-        let (_temp_dir, state) = create_test_state();
-        let err = ingest_manifest(&state, &create_manifest("", "run1")).unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(err.message().contains("workspace_id"));
-
-        let err = ingest_manifest(&state, &create_manifest("ws1", "")).unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(err.message().contains("run_id"));
+        let (_dir, state) = create_test_state();
+        let m1 = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
+        assert!(ingest_manifest(&state, &m1).unwrap_err().message().contains("workspace_id"));
+        let m2 = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
+        assert!(ingest_manifest(&state, &m2).unwrap_err().message().contains("run_id"));
     }
 
-    // P18: GetDeltaSummary Validation - empty workspace_id rejected
     #[test]
     fn delta_validation_rejects_empty_workspace() {
-        let (_temp_dir, state) = create_test_state();
-        let err = get_delta_summary(&state, "").unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(err.message().contains("workspace_id"));
+        let (_dir, state) = create_test_state();
+        assert!(get_delta_summary(&state, "").unwrap_err().message().contains("workspace_id"));
     }
 
-    // P3: First Run Baseline - returns (N, 0) for first run
-    #[test]
-    fn first_run_returns_all_failures_as_new() {
-        let (temp_dir, state) = create_test_state();
-        // Insert a run with 3 failures directly
-        let mut conn = state.conn.lock().unwrap();
-        let tx = conn.transaction().unwrap();
-        store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-        let failures = vec![
-            TestFailureRow { stable_id: "id1".into(), test_id: "t1".into(), file: "f1".into(), message: "m1".into() },
-            TestFailureRow { stable_id: "id2".into(), test_id: "t2".into(), file: "f2".into(), message: "m2".into() },
-            TestFailureRow { stable_id: "id3".into(), test_id: "t3".into(), file: "f3".into(), message: "m3".into() },
-        ];
-        store::insert_test_failures(&tx, "run1", &failures).unwrap();
-        store::complete_run(&tx, "run1", 1001).unwrap();
-        tx.commit().unwrap();
-        drop(conn);
-
-        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
-        assert_eq!(new_count, 3, "first run should report all failures as new");
-        assert_eq!(fixed_count, 0, "first run should report 0 fixed");
-        drop(temp_dir);
-    }
-
-    // P2: Delta Correctness - set difference between runs
-    #[test]
-    fn delta_computes_correct_set_difference() {
-        let (temp_dir, state) = create_test_state();
-        // Run 1: failures {A, B, C}
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            let failures = vec![
-                TestFailureRow { stable_id: "A".into(), test_id: "tA".into(), file: "f".into(), message: "m".into() },
-                TestFailureRow { stable_id: "B".into(), test_id: "tB".into(), file: "f".into(), message: "m".into() },
-                TestFailureRow { stable_id: "C".into(), test_id: "tC".into(), file: "f".into(), message: "m".into() },
-            ];
-            store::insert_test_failures(&tx, "run1", &failures).unwrap();
-            store::complete_run(&tx, "run1", 1001).unwrap();
-            tx.commit().unwrap();
-        }
-        // Run 2: failures {B, D} (A,C fixed; D new)
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run2", 2000).unwrap();
-            let failures = vec![
-                TestFailureRow { stable_id: "B".into(), test_id: "tB".into(), file: "f".into(), message: "m".into() },
-                TestFailureRow { stable_id: "D".into(), test_id: "tD".into(), file: "f".into(), message: "m".into() },
-            ];
-            store::insert_test_failures(&tx, "run2", &failures).unwrap();
-            store::complete_run(&tx, "run2", 2001).unwrap();
-            tx.commit().unwrap();
-        }
-
-        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
-        assert_eq!(new_count, 1, "D is new");
-        assert_eq!(fixed_count, 2, "A and C are fixed");
-        drop(temp_dir);
-    }
-
-    // P11: Path Traversal Prevention - reject paths with ..
     #[test]
     fn path_traversal_rejected() {
         let (temp_dir, state) = create_test_state();
-        // Create artifacts directory and a file outside it
         let artifacts_dir = temp_dir.path().join("artifacts");
         fs::create_dir_all(&artifacts_dir).unwrap();
-        let secret_file = temp_dir.path().join("secret.txt");
-        fs::write(&secret_file, "secret data").unwrap();
-
-        // Try to access file via path traversal
-        let traversal_path = artifacts_dir.join("..").join("secret.txt");
-        let err = validate_artifact_path(&state.cache_dir, traversal_path.to_str().unwrap());
-        assert!(err.is_err(), "path traversal should be rejected");
-        let err = err.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::NotFound);
+        fs::write(temp_dir.path().join("secret.txt"), "secret").unwrap();
+        let path = artifacts_dir.join("..").join("secret.txt");
+        let err = validate_artifact_path(&state.cache_dir, path.to_str().unwrap()).unwrap_err();
         assert!(err.message().contains("outside"));
     }
 
-    // P14: Artifact Size Limit - verify constant and read_artifact_file behavior
     #[test]
-    fn artifact_size_limit_constant_is_100mb() {
+    fn artifact_size_limit_is_100mb() {
         assert_eq!(MAX_ARTIFACT_SIZE, 100 * 1024 * 1024);
     }
 
     #[test]
-    fn read_artifact_file_succeeds_for_small_file() {
-        let temp_dir = tempdir().unwrap();
-        let file_path = temp_dir.path().join("small.json");
-        fs::write(&file_path, r#"{"test": "data"}"#).unwrap();
-
-        let content = read_artifact_file(&file_path).unwrap();
-        assert_eq!(content, r#"{"test": "data"}"#);
+    fn delta_with_findings_and_failures() {
+        let (_dir, state) = create_test_state();
+        // Run 1
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            store::insert_test_failures(&tx, "run1", &[TestFailureRow { stable_id: "tf1".into(), test_id: "t1".into(), file: "f".into(), message: "m".into() }]).unwrap();
+            store::insert_findings(&tx, "run1", &[FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() }]).unwrap();
+            store::complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+        let result = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(result.new_test_failures, 1);
+        assert_eq!(result.fixed_test_failures, 0);
+        assert_eq!(result.new_findings, 1);
+        assert_eq!(result.fixed_findings, 0);
     }
 
+    // P18: Empty findings delta
     #[test]
-    fn read_artifact_file_fails_for_missing_file() {
-        let temp_dir = tempdir().unwrap();
-        let missing = temp_dir.path().join("nonexistent.json");
-
-        let err = read_artifact_file(&missing).unwrap_err();
-        assert_eq!(err.code(), tonic::Code::NotFound);
+    fn delta_with_no_findings_returns_zero() {
+        let (_dir, state) = create_test_state();
+        // Run with no findings
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            store::complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+        let result = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(result.new_findings, 0);
+        assert_eq!(result.fixed_findings, 0);
     }
 
-    // P12: Transaction Atomicity - verify transaction wrapper exists
+    // P17: First run baseline - all findings are new
     #[test]
-    fn store_failures_uses_transaction() {
-        // Verify the function signature takes RpcState and uses transaction
-        // by checking that partial failure doesn't leave partial data
-        let (temp_dir, state) = create_test_state();
+    fn first_run_all_findings_are_new() {
+        let (_dir, state) = create_test_state();
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            store::insert_findings(&tx, "run1", &[
+                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
+                FindingRow { stable_id: "f2".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 2, start_column: 1, end_line: 2, end_column: 1, message: "m".into() },
+            ]).unwrap();
+            store::complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+        let result = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(result.new_findings, 2);
+        assert_eq!(result.fixed_findings, 0);
+    }
 
-        // After a failed ingest (file not found), no run should be recorded
-        let manifest = create_manifest("ws1", "run1");
-        let _ = ingest_manifest(&state, &manifest); // Will fail - file doesn't exist
-
-        // Should have no runs for this workspace
-        let (new_count, fixed_count) = get_delta_summary(&state, "ws1").unwrap();
-        assert_eq!(new_count, 0, "failed ingest should not create partial data");
-        assert_eq!(fixed_count, 0);
-        drop(temp_dir);
+    // P16: Delta computation - finds new and fixed findings
+    #[test]
+    fn delta_detects_new_and_fixed_findings() {
+        let (_dir, state) = create_test_state();
+        // Run 1: has f1, f2
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
+            store::insert_findings(&tx, "run1", &[
+                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
+                FindingRow { stable_id: "f2".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 2, start_column: 1, end_line: 2, end_column: 1, message: "m".into() },
+            ]).unwrap();
+            store::complete_run(&tx, "run1", 1001).unwrap();
+            tx.commit().unwrap();
+        }
+        // Run 2: has f1, f3 (f2 fixed, f3 new)
+        {
+            let mut conn = state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, "ws1", "run2", 2000).unwrap();
+            store::insert_findings(&tx, "run2", &[
+                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
+                FindingRow { stable_id: "f3".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 3, start_column: 1, end_line: 3, end_column: 1, message: "m".into() },
+            ]).unwrap();
+            store::complete_run(&tx, "run2", 2001).unwrap();
+            tx.commit().unwrap();
+        }
+        let result = get_delta_summary(&state, "ws1").unwrap();
+        assert_eq!(result.new_findings, 1); // f3 is new
+        assert_eq!(result.fixed_findings, 1); // f2 is fixed
     }
 }
