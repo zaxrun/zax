@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "bun run generate && cd crates && cargo build && cd ../packages && bun install && bun run build",
-    "build:release": "bun run generate && cd crates && cargo build --release && cd .. && mkdir -p dist && bun build --compile packages/cli/src/main.ts --outfile dist/zx && bun build --compile packages/engine/src/main.ts --outfile dist/zx-engine && cp crates/target/release/zax_workspace_service dist/",
+    "build:release": "bun run generate && cd crates && cargo build --release && cd .. && mkdir -p dist && rm -f dist/* && bun build --compile packages/cli/src/main.ts --outfile dist/zx && bun build --compile packages/engine/src/main.ts --outfile dist/zx-engine && cp crates/target/release/zax_workspace_service dist/",
     "clean": "rm -rf crates/target dist node_modules packages/node_modules packages/cli/node_modules packages/engine/node_modules packages/engine/src/gen",
     "generate": "cd proto && buf generate",
     "lint": "bun run lint:types && bun run lint:ts && bun run lint:rust",
