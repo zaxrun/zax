@@ -22,3 +22,6 @@ packages/cli/zax
 
 # macOS
 .DS_Store
+
+# Release binaries
+dist/
