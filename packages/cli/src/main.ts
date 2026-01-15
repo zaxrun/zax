@@ -1,11 +1,18 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { computeWorkspaceId, getCacheDir, ensureCacheDir } from "./lib/workspace.js";
 import { connectToEngine, getVersion, postCheck } from "./lib/engine-client.js";
 import { tryAcquireLock, releaseLock, acquireLockWithTimeout } from "./lib/lock.js";
 
 const SOCKET_WAIT_TIMEOUT_MS = 10000;
 const SOCKET_POLL_INTERVAL_MS = 100;
+
+/** Returns true if running as a compiled Bun binary. */
+function isCompiledBinary(): boolean {
+  // When compiled, execPath is the binary itself, not 'bun' or 'bun.exe'
+  const execName = process.execPath.toLowerCase();
+  return !execName.endsWith("bun") && !execName.endsWith("bun.exe");
+}
 
 function printUsage(): void {
   console.log("Usage: zx [options] [command]");
@@ -47,7 +54,12 @@ export function formatSkipMessage(result: CheckResult): string | undefined {
   return `eslint: skipped (${result.eslint_skip_reason ?? "unknown"})`;
 }
 
+/** Gets Engine path - binary in same dir when compiled, source file otherwise. */
 function getEnginePath(): string {
+  if (isCompiledBinary()) {
+    const binDir = dirname(process.execPath);
+    return join(binDir, "zx-engine");
+  }
   const thisFile = new URL(import.meta.url).pathname;
   const srcDir = resolve(thisFile, "..");
   const repoRoot = resolve(srcDir, "../../..");
@@ -70,7 +82,15 @@ async function waitForSocket(socketPath: string): Promise<boolean> {
 async function spawnEngine(cacheDir: string): Promise<void> {
   const enginePath = getEnginePath();
 
-  Bun.spawn(["bun", "run", enginePath, cacheDir], {
+  if (isCompiledBinary() && !existsSync(enginePath)) {
+    throw new Error(`Engine binary not found: ${enginePath}`);
+  }
+
+  const cmd = isCompiledBinary()
+    ? [enginePath, cacheDir]
+    : ["bun", "run", enginePath, cacheDir];
+
+  Bun.spawn(cmd, {
     stdio: ["ignore", "ignore", "ignore"],
   });
 }

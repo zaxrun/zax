@@ -8,9 +8,6 @@
     "build": "echo 'CLI runs via bun directly, no bundling needed'",
     "test": "bun test"
   },
-  "dependencies": {
-    "blake3": "^2.0.0"
-  },
   "devDependencies": {
     "@types/bun": "^1.0.0",
     "typescript": "^5.0.0"

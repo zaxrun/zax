@@ -1,4 +1,3 @@
-import { hash } from "blake3";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
@@ -6,10 +5,17 @@ import { resolve, join } from "node:path";
 const WORKSPACE_ID_LENGTH = 16;
 const CACHE_DIR_MODE = 0o700;
 
+/**
+ * Computes workspace ID from directory path.
+ * Uses BLAKE2b256 (Bun built-in) instead of BLAKE3 (design spec) because
+ * the blake3 npm package has native binding issues with `bun build --compile`.
+ * This is acceptable since workspace IDs are local cache keys only.
+ */
 export function computeWorkspaceId(cwd: string): string {
   const absolutePath = resolve(cwd);
-  const hashResult = hash(absolutePath);
-  return hashResult.toString("hex").slice(0, WORKSPACE_ID_LENGTH);
+  const hasher = new Bun.CryptoHasher("blake2b256");
+  hasher.update(absolutePath);
+  return hasher.digest("hex").slice(0, WORKSPACE_ID_LENGTH);
 }
 
 export function getCacheDir(workspaceId: string): string {

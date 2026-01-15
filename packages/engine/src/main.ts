@@ -1,5 +1,5 @@
 import { existsSync, writeFileSync, unlinkSync, openSync, closeSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import type { Subprocess } from "bun";
 import { waitForPortFile, createRustClient, pingWithRetry } from "./lib/rust-client.js";
 import { createEngineServer } from "./lib/server.js";
@@ -11,11 +11,23 @@ const RUST_SHUTDOWN_TIMEOUT_MS = 2000;
 
 let cacheDir = "";
 
+/** Returns true if running as a compiled Bun binary. */
+function isCompiledBinary(): boolean {
+  // When compiled, execPath is the binary itself, not 'bun' or 'bun.exe'
+  const execName = process.execPath.toLowerCase();
+  return !execName.endsWith("bun") && !execName.endsWith("bun.exe");
+}
+
 function getLogPath(): string {
   return join(cacheDir, "engine.log");
 }
 
+/** Gets Rust binary path - same dir when compiled, debug build otherwise. */
 function getRustBinaryPath(): string {
+  if (isCompiledBinary()) {
+    const binDir = dirname(process.execPath);
+    return join(binDir, "zax_workspace_service");
+  }
   const thisFile = new URL(import.meta.url).pathname;
   const srcDir = resolve(thisFile, "..");
   const repoRoot = resolve(srcDir, "../../..");
@@ -24,6 +36,11 @@ function getRustBinaryPath(): string {
 
 async function spawnRustService(): Promise<Subprocess> {
   const binaryPath = getRustBinaryPath();
+
+  if (!existsSync(binaryPath)) {
+    throw new Error(`Rust binary not found: ${binaryPath}`);
+  }
+
   log(`Spawning Rust service: ${binaryPath} ${cacheDir}`);
 
   const logFd = openSync(getLogPath(), "a");
