@@ -13,7 +13,7 @@
     "lint:rust": "cd crates && cargo clippy --all-targets -- -D warnings",
     "lint:fix": "eslint packages/*/src/**/*.ts --fix",
     "test": "bun run test:rust && bun run test:ts",
-    "test:ts": "cd packages/cli && bun test && cd ../engine && bun test",
+    "test:ts": "cd packages/cli && bun test && cd ../engine && bun test && cd ../.. && bun test tests/e2e/",
     "test:rust": "cd crates && cargo test"
   },
   "devDependencies": {

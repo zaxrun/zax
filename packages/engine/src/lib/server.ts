@@ -23,10 +23,6 @@ import { runCheck, isCheckInProgress, type CheckError } from "./check.js";
 
 const RPC_TIMEOUT_MS = 5000;
 const WORKSPACE_ID_PATTERN = /^[0-9a-f]{16}$/;
-/** Minimum interval between check requests (1 second). */
-const CHECK_RATE_LIMIT_MS = 1000;
-
-let lastCheckTime = 0;
 
 /** Validates workspace_id is 16 lowercase hex characters. */
 export function isValidWorkspaceId(id: string): boolean {
@@ -144,30 +140,12 @@ function validateCheckRequest(body: CheckRequestBody | null, headers: Record<str
   return null;
 }
 
-/** Check rate limiting. Returns 429 response if rate limited, null otherwise. */
-function checkRateLimit(headers: Record<string, string>): Response | null {
-  const now = Date.now();
-  const elapsed = now - lastCheckTime;
-  if (elapsed < CHECK_RATE_LIMIT_MS) {
-    const retryAfter = Math.ceil((CHECK_RATE_LIMIT_MS - elapsed) / 1000);
-    return jsonResponse(
-      { error: "rate limited", retry_after_seconds: retryAfter },
-      429,
-      { ...headers, "Retry-After": String(retryAfter) }
-    );
-  }
-  return null;
-}
-
 async function handleCheck(
   req: Request,
   cacheDir: string,
   client: RustClient,
   headers: Record<string, string>
 ): Promise<Response> {
-  const rateLimitResponse = checkRateLimit(headers);
-  if (rateLimitResponse) { return rateLimitResponse; }
-
   if (isCheckInProgress()) {
     return jsonResponse({ error: "check already in progress" }, 409, headers);
   }
@@ -177,9 +155,6 @@ async function handleCheck(
   if (validationError) {
     return validationError;
   }
-
-  // Update last check time before starting
-  lastCheckTime = Date.now();
 
   try {
     const result = await runCheck({

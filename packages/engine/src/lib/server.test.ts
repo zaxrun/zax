@@ -139,11 +139,6 @@ describe("isValidWorkspaceId", () => {
   });
 });
 
-// Note: Rate limiting is tested via integration - the checkRateLimit function
-// returns 429 with Retry-After header when requests are too rapid.
-// Full test would require mocking Date.now() which adds complexity.
-// The implementation uses CHECK_RATE_LIMIT_MS (1 second) cooldown.
-
 describe("isValidWorkspaceRoot", () => {
   let testDir: string;
 
