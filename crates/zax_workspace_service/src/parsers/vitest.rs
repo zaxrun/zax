@@ -163,8 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_extracts_failures_and_handles_edge_cases() {
-        // Valid failure
+    fn parse_extracts_valid_failure() {
         let json = make_json(
             "/ws/src/t.ts",
             "failed",
@@ -175,17 +174,23 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].test_id, "A > B > test");
         assert_eq!(f[0].file, "src/t.ts");
+    }
 
-        // Empty results
+    #[test]
+    fn parse_returns_empty_for_no_results() {
         assert!(parse(r#"{"testResults":[]}"#, "/ws").unwrap().is_empty());
+    }
 
-        // Malformed JSON
+    #[test]
+    fn parse_returns_error_for_malformed_json() {
         assert!(matches!(
             parse("bad", "/ws"),
             Err(ParseError::InvalidJson(_))
         ));
+    }
 
-        // Passing test skipped
+    #[test]
+    fn parse_ignores_passing_tests() {
         let pass = make_json(
             "/ws/t.ts",
             "passed",
@@ -196,8 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_truncates_and_handles_empty_messages() {
-        // Truncation - verify length and "..." suffix
+    fn parse_truncates_long_messages() {
         let long = "x".repeat(1500);
         let json = make_json(
             "/ws/t.ts",
@@ -208,32 +212,37 @@ mod tests {
         let result = parse(&json, "/ws").unwrap();
         assert_eq!(result[0].message.len(), MAX_MESSAGE_LENGTH);
         assert!(result[0].message.ends_with("..."));
+    }
 
-        // Short message - no truncation, no "..."
+    #[test]
+    fn parse_preserves_short_messages() {
         let short = "short error";
-        let json2 = make_json(
+        let json = make_json(
             "/ws/t.ts",
             "failed",
             None,
             &assertion(&[], "t", "failed", short),
         );
-        let result2 = parse(&json2, "/ws").unwrap();
-        assert_eq!(result2[0].message, short);
-        assert!(!result2[0].message.ends_with("..."));
+        let result = parse(&json, "/ws").unwrap();
+        assert_eq!(result[0].message, short);
+        assert!(!result[0].message.ends_with("..."));
+    }
 
-        // Empty failureMessages
+    #[test]
+    fn parse_handles_empty_failure_messages() {
         let empty = r#"{"testResults":[{"name":"/ws/t.ts","status":"failed","assertionResults":[{"ancestorTitles":[],"title":"t","status":"failed","failureMessages":[]}]}]}"#;
         assert_eq!(parse(empty, "/ws").unwrap()[0].message, "");
     }
 
     #[test]
-    fn parse_file_level_error_and_nested_describe() {
-        // File-level error
+    fn parse_handles_file_level_error() {
         let json = make_json("/ws/src/b.ts", "failed", Some("SyntaxError"), "");
         let f = parse(&json, "/ws").unwrap();
         assert_eq!(f[0].test_id, "src/b.ts::file-error");
+    }
 
-        // Nested describe
+    #[test]
+    fn parse_constructs_test_id_from_nested_ancestors() {
         let nested = make_json(
             "/ws/t.ts",
             "failed",

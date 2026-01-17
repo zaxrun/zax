@@ -158,17 +158,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_extracts_errors_only() {
-        let err = make_message(Some("no-unused-vars"), 2, 10, 5, "x is unused");
-        let warn = make_message(Some("no-console"), 1, 20, 1, "no console");
-        let json = make_eslint_json(Some("/ws/src/a.js"), &format!("{err},{warn}"));
+    fn parse_filters_non_error_severity() {
+        let err = make_message(Some("error"), 2, 1, 1, "e");
+        let warn = make_message(Some("warning"), 1, 1, 1, "w");
+        let json = make_eslint_json(Some("/ws/f.js"), &format!("{err},{warn}"));
         let findings = parse(&json, "/ws").unwrap();
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule, "error");
+    }
+
+    #[test]
+    fn parse_maps_basic_fields() {
+        let err = make_message(Some("no-unused-vars"), 2, 10, 5, "x is unused");
+        let json = make_eslint_json(Some("/ws/src/a.js"), &err);
+        let findings = parse(&json, "/ws").unwrap();
         assert_eq!(findings[0].rule, "no-unused-vars");
         assert_eq!(findings[0].file, "src/a.js");
         assert_eq!(findings[0].start_line, 10);
         assert_eq!(findings[0].start_column, 5);
         assert_eq!(findings[0].tool, "eslint");
+        assert_eq!(findings[0].message, "x is unused");
     }
 
     #[test]
@@ -200,21 +209,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_truncates_oversized_fields() {
-        let long_rule = "x".repeat(300);
-        let long_file = format!("/ws/{}", "y".repeat(4200));
-        let long_msg = "z".repeat(1500);
-        let msg = format!(
-            r#"{{"ruleId":"{long_rule}","severity":2,"line":1,"column":1,"message":"{long_msg}"}}"#
-        );
-        let json = format!(r#"[{{"filePath":"{long_file}","messages":[{msg}]}}]"#);
+    fn parse_truncates_long_rule_id() {
+        let long_rule = "x".repeat(MAX_RULE_LENGTH + 10);
+        let msg = make_message(Some(&long_rule), 2, 1, 1, "m");
+        let json = make_eslint_json(Some("/ws/f.js"), &msg);
         let findings = parse(&json, "/ws").unwrap();
         assert_eq!(findings[0].rule.len(), MAX_RULE_LENGTH);
-        assert_eq!(findings[0].file.len(), MAX_FILE_LENGTH);
-        assert_eq!(findings[0].message.len(), MAX_MESSAGE_LENGTH);
-        // Verify truncated fields end with "..."
         assert!(findings[0].rule.ends_with("..."));
+    }
+
+    #[test]
+    fn parse_truncates_long_file_path() {
+        let long_file = format!("/ws/{}", "y".repeat(MAX_FILE_LENGTH + 10));
+        let msg = make_message(Some("r"), 2, 1, 1, "m");
+        let json = make_eslint_json(Some(&long_file), &msg);
+        let findings = parse(&json, "/ws").unwrap();
+        assert_eq!(findings[0].file.len(), MAX_FILE_LENGTH);
         assert!(findings[0].file.ends_with("..."));
+    }
+
+    #[test]
+    fn parse_truncates_long_message() {
+        let long_msg = "z".repeat(MAX_MESSAGE_LENGTH + 10);
+        let msg = make_message(Some("r"), 2, 1, 1, &long_msg);
+        let json = make_eslint_json(Some("/ws/f.js"), &msg);
+        let findings = parse(&json, "/ws").unwrap();
+        assert_eq!(findings[0].message.len(), MAX_MESSAGE_LENGTH);
         assert!(findings[0].message.ends_with("..."));
     }
 
@@ -257,12 +277,19 @@ mod tests {
     }
 
     #[test]
-    fn stable_id_determinism() {
+    fn stable_id_is_deterministic() {
         let json = make_eslint_json(Some("/ws/f.js"), &make_message(Some("r"), 2, 1, 1, "m"));
         let f1 = parse(&json, "/ws").unwrap();
         let f2 = parse(&json, "/ws").unwrap();
         assert_eq!(f1[0].stable_id, f2[0].stable_id);
-        assert_eq!(f1[0].stable_id.len(), 32);
+    }
+
+    #[test]
+    fn stable_id_has_expected_format() {
+        let json = make_eslint_json(Some("/ws/f.js"), &make_message(Some("r"), 2, 1, 1, "m"));
+        let f = parse(&json, "/ws").unwrap();
+        assert_eq!(f[0].stable_id.len(), 32);
+        assert!(f[0].stable_id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
