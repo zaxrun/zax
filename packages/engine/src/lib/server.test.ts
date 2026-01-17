@@ -31,44 +31,39 @@ describe("createEngineServer", () => {
   }
 
   describe("GET /health", () => {
-    test("returns 200 with status ok", async () => {
+    test("returns successful response with correct headers", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
       server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/health");
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ status: "ok" });
-    });
-
-    test("returns Content-Type application/json", async () => {
-      const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
-
-      const response = await fetch("/health");
       expect(response.headers.get("Content-Type")).toBe("application/json");
+      expect(await response.json()).toEqual({ status: "ok" });
     });
   });
 
   describe("GET /version", () => {
-    test("returns 200 with version when Rust client succeeds", async () => {
+    test("returns version from Rust client", async () => {
       const mockClient = { ping: mock(() => Promise.resolve({ version: "0.1.0" })) };
       server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("application/json");
       expect(await response.json()).toEqual({ version: "0.1.0" });
     });
 
-    test("returns 502 when Rust client fails", async () => {
+    test("handles Rust client failure", async () => {
       const mockClient = { ping: mock(() => Promise.reject(new Error("Connection refused"))) };
       server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
 
       const response = await fetch("/version");
       expect(response.status).toBe(502);
+      expect(response.headers.get("Content-Type")).toBe("application/json");
       expect(await response.json()).toEqual({ error: "rust service unavailable" });
     });
 
-    test("returns 504 when Rust client times out", async () => {
+    test("handles Rust client timeout", async () => {
       const abortError = new Error("Aborted");
       abortError.name = "AbortError";
       const mockClient = { ping: mock(() => Promise.reject(abortError)) };
@@ -76,23 +71,8 @@ describe("createEngineServer", () => {
 
       const response = await fetch("/version");
       expect(response.status).toBe(504);
+      expect(response.headers.get("Content-Type")).toBe("application/json");
       expect(await response.json()).toEqual({ error: "rust service timeout" });
-    });
-
-    test("returns Content-Type application/json on success", async () => {
-      const mockClient = { ping: mock(() => Promise.resolve({ version: "1.0.0" })) };
-      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
-
-      const response = await fetch("/version");
-      expect(response.headers.get("Content-Type")).toBe("application/json");
-    });
-
-    test("returns Content-Type application/json on error", async () => {
-      const mockClient = { ping: mock(() => Promise.reject(new Error("fail"))) };
-      server = createEngineServer({ socketPath, cacheDir, rustClient: mockClient as never });
-
-      const response = await fetch("/version");
-      expect(response.headers.get("Content-Type")).toBe("application/json");
     });
   });
 
@@ -127,14 +107,20 @@ describe("isValidWorkspaceId", () => {
     expect(isValidWorkspaceId("0123456789ABCDEF")).toBe(false);
   });
 
-  test("rejects wrong length", () => {
+  test("rejects too short", () => {
     expect(isValidWorkspaceId("0123456789abcde")).toBe(false);  // 15 chars
-    expect(isValidWorkspaceId("0123456789abcdef0")).toBe(false); // 17 chars
     expect(isValidWorkspaceId("")).toBe(false);
   });
 
-  test("rejects non-hex characters", () => {
+  test("rejects too long", () => {
+    expect(isValidWorkspaceId("0123456789abcdef0")).toBe(false); // 17 chars
+  });
+
+  test("rejects non-hex letters", () => {
     expect(isValidWorkspaceId("0123456789abcdeg")).toBe(false);
+  });
+
+  test("rejects separators", () => {
     expect(isValidWorkspaceId("workspace-id-123")).toBe(false);
   });
 });

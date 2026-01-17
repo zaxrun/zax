@@ -31,53 +31,32 @@ describe("waitForPortFile", () => {
   });
 
   test("throws on timeout", async () => {
-    try {
-      await waitForPortFile(testDir, 200);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(/Timeout waiting for port file/);
-    }
+    const promise = waitForPortFile(testDir, 200);
+    await expect(promise).rejects.toThrow(/Timeout waiting for port file/);
   });
 
   test("ignores invalid port (negative)", async () => {
     writeFileSync(join(testDir, "rust.port"), "-1");
-    try {
-      await waitForPortFile(testDir, 200);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toMatch(/Timeout/);
-    }
+    const promise = waitForPortFile(testDir, 200);
+    await expect(promise).rejects.toThrow(/Timeout/);
   });
 
   test("ignores invalid port (zero)", async () => {
     writeFileSync(join(testDir, "rust.port"), "0");
-    try {
-      await waitForPortFile(testDir, 200);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toMatch(/Timeout/);
-    }
+    const promise = waitForPortFile(testDir, 200);
+    await expect(promise).rejects.toThrow(/Timeout/);
   });
 
   test("ignores invalid port (too high)", async () => {
     writeFileSync(join(testDir, "rust.port"), "70000");
-    try {
-      await waitForPortFile(testDir, 200);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toMatch(/Timeout/);
-    }
+    const promise = waitForPortFile(testDir, 200);
+    await expect(promise).rejects.toThrow(/Timeout/);
   });
 
   test("ignores invalid port (non-numeric)", async () => {
     writeFileSync(join(testDir, "rust.port"), "notaport");
-    try {
-      await waitForPortFile(testDir, 200);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toMatch(/Timeout/);
-    }
+    const promise = waitForPortFile(testDir, 200);
+    await expect(promise).rejects.toThrow(/Timeout/);
   });
 
   test("trims whitespace from port file", async () => {
@@ -138,12 +117,8 @@ describe("pingWithRetry", () => {
     const mockClient = {
       ping: mock(() => Promise.reject(new Error("Connection refused"))),
     };
-    try {
-      await pingWithRetry(mockClient as never, [10, 10, 10]);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toBe("Connection refused");
-    }
+    const promise = pingWithRetry(mockClient as never, [10, 10, 10]);
+    await expect(promise).rejects.toThrow("Connection refused");
     expect(mockClient.ping).toHaveBeenCalledTimes(3);
   });
 
@@ -151,12 +126,8 @@ describe("pingWithRetry", () => {
     const mockClient = {
       ping: mock(() => Promise.reject(new Error("fail"))),
     };
-    try {
-      await pingWithRetry(mockClient as never, [10, 10]);
-      expect.unreachable("Should have thrown");
-    } catch {
-      // Expected to throw
-    }
+    const promise = pingWithRetry(mockClient as never, [10, 10]);
+    await expect(promise).rejects.toThrow();
     expect(mockClient.ping).toHaveBeenCalledTimes(2);
   });
 
@@ -168,11 +139,7 @@ describe("pingWithRetry", () => {
         return Promise.reject(new Error(`Error ${callCount}`));
       }),
     };
-    try {
-      await pingWithRetry(mockClient as never, [10, 10, 10]);
-      expect.unreachable("Should have thrown");
-    } catch (error) {
-      expect((error as Error).message).toBe("Error 3");
-    }
+    const promise = pingWithRetry(mockClient as never, [10, 10, 10]);
+    await expect(promise).rejects.toThrow("Error 3");
   });
 });

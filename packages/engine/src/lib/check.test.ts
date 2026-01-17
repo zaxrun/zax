@@ -18,6 +18,61 @@ describe("check module", () => {
     });
   });
 
+  // P6/P7: CheckError codes for timeout handling
+  describe("CheckError codes", () => {
+    test("sets error code correctly", () => {
+      const err = new CheckError("VITEST_TIMEOUT");
+      expect(err.code).toBe("VITEST_TIMEOUT");
+    });
+
+    test("sets error name to CheckError", () => {
+      const err = new CheckError("VITEST_TIMEOUT");
+      expect(err.name).toBe("CheckError");
+    });
+
+    test("RPC_TIMEOUT code is supported", () => {
+      const err = new CheckError("RPC_TIMEOUT");
+      expect(err.code).toBe("RPC_TIMEOUT");
+    });
+
+    test("CONCURRENT_CHECK code is supported", () => {
+      const err = new CheckError("CONCURRENT_CHECK");
+      expect(err.code).toBe("CONCURRENT_CHECK");
+    });
+
+    test("constructor sets custom message", () => {
+      const err = new CheckError("VITEST_FAILED", "custom message");
+      expect(err.message).toBe("custom message");
+    });
+
+    test("constructor sets code when message is provided", () => {
+      const err = new CheckError("VITEST_FAILED", "custom message");
+      expect(err.code).toBe("VITEST_FAILED");
+    });
+
+    test("message defaults to code when not provided", () => {
+      const err = new CheckError("INTERNAL");
+      expect(err.message).toBe("INTERNAL");
+    });
+  });
+
+  // P2: ESLint Command Construction
+  describe("buildEslintCommand", () => {
+    test("returns correct command array with output path", () => {
+      const path = "/cache/artifacts/run1/eslint.json";
+      const cmd = buildEslintCommand(path);
+      expect(cmd).toEqual(["npx", "eslint", "-f", "json", "-o", path, "."]);
+    });
+
+    test("output path is in -o flag", () => {
+      const outputPath = "/cache/artifacts/run-uuid/eslint.json";
+      const cmd = buildEslintCommand(outputPath);
+      // cmd is ["npx", "eslint", "-f", "json", "-o", outputPath, "."]
+      const outputIndex = cmd.indexOf("-o") + 1;
+      expect(cmd[outputIndex]).toBe(outputPath);
+    });
+  });
+
   describe("runCheck", () => {
     test("creates artifacts directory with run_id", async () => {
       const mockClient = {
@@ -46,18 +101,12 @@ describe("check module", () => {
         getDeltaSummary: mock(() => Promise.resolve({ newTestFailures: 0, fixedTestFailures: 0 })),
       };
 
-      try {
-        await runCheck({
-          cacheDir,
-          workspaceId: "test-ws",
-          workspaceRoot: "/nonexistent/path/that/does/not/exist",
-          rustClient: mockClient as never,
-        });
-        expect(true).toBe(false); // Should not reach here
-      } catch (err) {
-        // Either CheckError or system error (ENOENT if npx not found)
-        expect(err).toBeDefined();
-      }
+      await expect(runCheck({
+        cacheDir,
+        workspaceId: "test-ws",
+        workspaceRoot: "/nonexistent/path/that/does/not/exist",
+        rustClient: mockClient as never,
+      })).rejects.toThrow();
     });
 
     test("concurrent check flag is reset after completion", async () => {
@@ -80,53 +129,6 @@ describe("check module", () => {
 
       // After completion, should not be in progress
       expect(isCheckInProgress()).toBe(false);
-    });
-  });
-
-  // P6/P7: CheckError codes for timeout handling
-  describe("CheckError codes", () => {
-    test("VITEST_TIMEOUT code exists for P6 timeout enforcement", () => {
-      const err = new CheckError("VITEST_TIMEOUT");
-      expect(err.code).toBe("VITEST_TIMEOUT");
-      expect(err.name).toBe("CheckError");
-    });
-
-    test("RPC_TIMEOUT code exists for gRPC timeout", () => {
-      const err = new CheckError("RPC_TIMEOUT");
-      expect(err.code).toBe("RPC_TIMEOUT");
-    });
-
-    test("CONCURRENT_CHECK code exists for P7 concurrent check prevention", () => {
-      const err = new CheckError("CONCURRENT_CHECK");
-      expect(err.code).toBe("CONCURRENT_CHECK");
-    });
-
-    test("CheckError includes message when provided", () => {
-      const err = new CheckError("VITEST_FAILED", "custom message");
-      expect(err.code).toBe("VITEST_FAILED");
-      expect(err.message).toBe("custom message");
-    });
-
-    test("CheckError uses code as message when message not provided", () => {
-      const err = new CheckError("INTERNAL");
-      expect(err.message).toBe("INTERNAL");
-    });
-  });
-
-  // P2: ESLint Command Construction
-  describe("buildEslintCommand", () => {
-    test("returns correct command array with output path", () => {
-      const path = "/cache/artifacts/run1/eslint.json";
-      const cmd = buildEslintCommand(path);
-      expect(cmd).toEqual(["npx", "eslint", "-f", "json", "-o", path, "."]);
-    });
-
-    test("output path is in -o flag", () => {
-      const outputPath = "/cache/artifacts/run-uuid/eslint.json";
-      const cmd = buildEslintCommand(outputPath);
-      // cmd is ["npx", "eslint", "-f", "json", "-o", outputPath, "."]
-      const outputIndex = cmd.indexOf("-o") + 1;
-      expect(cmd[outputIndex]).toBe(outputPath);
     });
   });
 
@@ -311,7 +313,7 @@ describe("check module", () => {
 
   // P1: ESLint Spawn Sequencing - Vitest runs before ESLint
   describe("spawn sequencing", () => {
-    test("spawnEslint can be called independently (sequential spawn verification)", async () => {
+    test("spawnEslint returns result when run independently", async () => {
       // This test verifies spawnEslint is a separate function that can be called
       // after vitest completes. The executeCheck function calls them sequentially:
       // await spawnVitest(...) then await spawnEslint(...)
@@ -323,16 +325,6 @@ describe("check module", () => {
       expect(result).toHaveProperty("skipped");
       // In test env without eslint, should be skipped
       expect(result.skipped).toBe(true);
-    });
-
-    test("executeCheck calls vitest then eslint sequentially (via code inspection)", () => {
-      // Property P1 requires vitest to complete before eslint starts.
-      // The implementation in check.ts:62-66 shows:
-      //   await spawnVitest(workspaceRoot, vitestPath);
-      //   const eslintResult = await spawnEslint(...)
-      // This is sequential by design - await ensures vitest completes first.
-      // This test documents the contract.
-      expect(true).toBe(true); // Design verification test
     });
   });
 
