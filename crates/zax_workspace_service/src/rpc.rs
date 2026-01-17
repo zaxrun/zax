@@ -74,14 +74,19 @@ fn parse_artifacts(
     Ok((failures, findings))
 }
 
-fn validate_artifact_path(cache_dir: &Path, artifact_path: &str) -> Result<std::path::PathBuf, Status> {
+fn validate_artifact_path(
+    cache_dir: &Path,
+    artifact_path: &str,
+) -> Result<std::path::PathBuf, Status> {
     let path = std::path::PathBuf::from(artifact_path);
     let canonical = path
         .canonicalize()
         .map_err(|_| Status::not_found(format!("artifact file not found: {artifact_path}")))?;
     let artifacts_dir = cache_dir.join("artifacts");
     if !canonical.starts_with(&artifacts_dir) {
-        return Err(Status::not_found("artifact path outside artifacts directory"));
+        return Err(Status::not_found(
+            "artifact path outside artifacts directory",
+        ));
     }
     Ok(canonical)
 }
@@ -156,8 +161,13 @@ fn store_all(
         .duration_since(UNIX_EPOCH)
         .map_err(|e| Status::internal(format!("time error: {e}")))?
         .as_secs() as i64;
-    let mut conn = state.conn.lock().map_err(|_| Status::internal("lock error"))?;
-    let tx = conn.transaction().map_err(|e| Status::internal(format!("transaction error: {e}")))?;
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|_| Status::internal("lock error"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| Status::internal(format!("transaction error: {e}")))?;
     store::insert_run(&tx, &manifest.workspace_id, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("insert run: {e}")))?;
     store::insert_test_failures(&tx, &manifest.run_id, failures)
@@ -166,7 +176,8 @@ fn store_all(
         .map_err(|e| Status::internal(format!("insert findings: {e}")))?;
     store::complete_run(&tx, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("complete run: {e}")))?;
-    tx.commit().map_err(|e| Status::internal(format!("commit: {e}")))?;
+    tx.commit()
+        .map_err(|e| Status::internal(format!("commit: {e}")))?;
     Ok(())
 }
 
@@ -185,9 +196,12 @@ pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<DeltaRe
     if workspace_id.is_empty() {
         return Err(Status::invalid_argument("workspace_id is required"));
     }
-    let conn = state.conn.lock().map_err(|_| Status::internal("lock error"))?;
-    let runs =
-        store::get_recent_runs(&conn, workspace_id, 2).map_err(|e| Status::internal(format!("query runs: {e}")))?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| Status::internal("lock error"))?;
+    let runs = store::get_recent_runs(&conn, workspace_id, 2)
+        .map_err(|e| Status::internal(format!("query runs: {e}")))?;
     let result = compute_delta(&conn, &runs)?;
     eprintln!(
         "[rpc] Delta: new_tf={}, fixed_tf={}, new_f={}, fixed_f={}",
@@ -201,14 +215,28 @@ pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<DeltaRe
 
 fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<DeltaResult, Status> {
     if runs.is_empty() {
-        return Ok(DeltaResult { new_test_failures: 0, fixed_test_failures: 0, new_findings: 0, fixed_findings: 0 });
+        return Ok(DeltaResult {
+            new_test_failures: 0,
+            fixed_test_failures: 0,
+            new_findings: 0,
+            fixed_findings: 0,
+        });
     }
     let (new_tf, fixed_tf) = compute_entity_delta(conn, runs, store::get_stable_ids_for_run)?;
     let (new_f, fixed_f) = compute_entity_delta(conn, runs, store::get_finding_stable_ids_for_run)?;
-    Ok(DeltaResult { new_test_failures: new_tf, fixed_test_failures: fixed_tf, new_findings: new_f, fixed_findings: fixed_f })
+    Ok(DeltaResult {
+        new_test_failures: new_tf,
+        fixed_test_failures: fixed_tf,
+        new_findings: new_f,
+        fixed_findings: fixed_f,
+    })
 }
 
-fn compute_entity_delta<F>(conn: &Connection, runs: &[store::RunInfo], query_fn: F) -> Result<(i32, i32), Status>
+fn compute_entity_delta<F>(
+    conn: &Connection,
+    runs: &[store::RunInfo],
+    query_fn: F,
+) -> Result<(i32, i32), Status>
 where
     F: Fn(&Connection, &str) -> Result<Vec<String>, store::StoreError>,
 {
@@ -223,7 +251,10 @@ where
         .map_err(|e| Status::internal(format!("query previous: {e}")))?
         .into_iter()
         .collect();
-    Ok((current_ids.difference(&previous_ids).count() as i32, previous_ids.difference(&current_ids).count() as i32))
+    Ok((
+        current_ids.difference(&previous_ids).count() as i32,
+        previous_ids.difference(&current_ids).count() as i32,
+    ))
 }
 
 #[cfg(test)]
@@ -240,14 +271,30 @@ mod tests {
         init_storage(temp_dir.path()).unwrap();
         let conn = open_connection(temp_dir.path()).unwrap();
         let cache_dir = temp_dir.path().to_path_buf();
-        (temp_dir, RpcState { cache_dir, conn: Arc::new(Mutex::new(conn)) })
+        (
+            temp_dir,
+            RpcState {
+                cache_dir,
+                conn: Arc::new(Mutex::new(conn)),
+            },
+        )
     }
 
-    fn create_manifest(workspace_id: &str, run_id: &str, kind: ArtifactKind, path: &str) -> ArtifactManifest {
+    fn create_manifest(
+        workspace_id: &str,
+        run_id: &str,
+        kind: ArtifactKind,
+        path: &str,
+    ) -> ArtifactManifest {
         ArtifactManifest {
             workspace_id: workspace_id.into(),
             run_id: run_id.into(),
-            artifacts: vec![ArtifactRef { artifact_id: "a1".into(), kind: kind as i32, path: path.into(), hash: String::new() }],
+            artifacts: vec![ArtifactRef {
+                artifact_id: "a1".into(),
+                kind: kind as i32,
+                path: path.into(),
+                hash: String::new(),
+            }],
         }
     }
 
@@ -255,15 +302,24 @@ mod tests {
     fn manifest_validation_rejects_empty_fields() {
         let (_dir, state) = create_test_state();
         let m1 = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m1).unwrap_err().message().contains("workspace_id"));
+        assert!(ingest_manifest(&state, &m1)
+            .unwrap_err()
+            .message()
+            .contains("workspace_id"));
         let m2 = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m2).unwrap_err().message().contains("run_id"));
+        assert!(ingest_manifest(&state, &m2)
+            .unwrap_err()
+            .message()
+            .contains("run_id"));
     }
 
     #[test]
     fn delta_validation_rejects_empty_workspace() {
         let (_dir, state) = create_test_state();
-        assert!(get_delta_summary(&state, "").unwrap_err().message().contains("workspace_id"));
+        assert!(get_delta_summary(&state, "")
+            .unwrap_err()
+            .message()
+            .contains("workspace_id"));
     }
 
     #[test]
@@ -290,8 +346,33 @@ mod tests {
             let mut conn = state.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_test_failures(&tx, "run1", &[TestFailureRow { stable_id: "tf1".into(), test_id: "t1".into(), file: "f".into(), message: "m".into() }]).unwrap();
-            store::insert_findings(&tx, "run1", &[FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() }]).unwrap();
+            store::insert_test_failures(
+                &tx,
+                "run1",
+                &[TestFailureRow {
+                    stable_id: "tf1".into(),
+                    test_id: "t1".into(),
+                    file: "f".into(),
+                    message: "m".into(),
+                }],
+            )
+            .unwrap();
+            store::insert_findings(
+                &tx,
+                "run1",
+                &[FindingRow {
+                    stable_id: "f1".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    message: "m".into(),
+                }],
+            )
+            .unwrap();
             store::complete_run(&tx, "run1", 1001).unwrap();
             tx.commit().unwrap();
         }
@@ -327,10 +408,35 @@ mod tests {
             let mut conn = state.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_findings(&tx, "run1", &[
-                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
-                FindingRow { stable_id: "f2".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 2, start_column: 1, end_line: 2, end_column: 1, message: "m".into() },
-            ]).unwrap();
+            store::insert_findings(
+                &tx,
+                "run1",
+                &[
+                    FindingRow {
+                        stable_id: "f1".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 1,
+                        start_column: 1,
+                        end_line: 1,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                    FindingRow {
+                        stable_id: "f2".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 2,
+                        start_column: 1,
+                        end_line: 2,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                ],
+            )
+            .unwrap();
             store::complete_run(&tx, "run1", 1001).unwrap();
             tx.commit().unwrap();
         }
@@ -348,10 +454,35 @@ mod tests {
             let mut conn = state.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_findings(&tx, "run1", &[
-                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
-                FindingRow { stable_id: "f2".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 2, start_column: 1, end_line: 2, end_column: 1, message: "m".into() },
-            ]).unwrap();
+            store::insert_findings(
+                &tx,
+                "run1",
+                &[
+                    FindingRow {
+                        stable_id: "f1".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 1,
+                        start_column: 1,
+                        end_line: 1,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                    FindingRow {
+                        stable_id: "f2".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 2,
+                        start_column: 1,
+                        end_line: 2,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                ],
+            )
+            .unwrap();
             store::complete_run(&tx, "run1", 1001).unwrap();
             tx.commit().unwrap();
         }
@@ -360,10 +491,35 @@ mod tests {
             let mut conn = state.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             store::insert_run(&tx, "ws1", "run2", 2000).unwrap();
-            store::insert_findings(&tx, "run2", &[
-                FindingRow { stable_id: "f1".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 1, start_column: 1, end_line: 1, end_column: 1, message: "m".into() },
-                FindingRow { stable_id: "f3".into(), tool: "eslint".into(), rule: "r".into(), file: "f".into(), start_line: 3, start_column: 1, end_line: 3, end_column: 1, message: "m".into() },
-            ]).unwrap();
+            store::insert_findings(
+                &tx,
+                "run2",
+                &[
+                    FindingRow {
+                        stable_id: "f1".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 1,
+                        start_column: 1,
+                        end_line: 1,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                    FindingRow {
+                        stable_id: "f3".into(),
+                        tool: "eslint".into(),
+                        rule: "r".into(),
+                        file: "f".into(),
+                        start_line: 3,
+                        start_column: 1,
+                        end_line: 3,
+                        end_column: 1,
+                        message: "m".into(),
+                    },
+                ],
+            )
+            .unwrap();
             store::complete_run(&tx, "run2", 2001).unwrap();
             tx.commit().unwrap();
         }

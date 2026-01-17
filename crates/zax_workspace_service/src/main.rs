@@ -23,8 +23,8 @@ pub mod zax {
 
 use zax::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use zax::v1::{
-    GetDeltaSummaryRequest, GetDeltaSummaryResponse, IngestManifestRequest,
-    IngestManifestResponse, PingRequest, PingResponse,
+    GetDeltaSummaryRequest, GetDeltaSummaryResponse, IngestManifestRequest, IngestManifestResponse,
+    PingRequest, PingResponse,
 };
 
 pub struct WorkspaceServiceImpl {
@@ -44,9 +44,10 @@ impl WorkspaceService for WorkspaceServiceImpl {
         &self,
         request: Request<IngestManifestRequest>,
     ) -> Result<Response<IngestManifestResponse>, Status> {
-        let manifest = request.into_inner().manifest.ok_or_else(|| {
-            Status::invalid_argument("manifest is required")
-        })?;
+        let manifest = request
+            .into_inner()
+            .manifest
+            .ok_or_else(|| Status::invalid_argument("manifest is required"))?;
         rpc::ingest_manifest(&self.state, &manifest)?;
         Ok(Response::new(IngestManifestResponse {}))
     }

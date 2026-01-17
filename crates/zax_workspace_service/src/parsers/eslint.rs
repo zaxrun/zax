@@ -113,7 +113,11 @@ fn build_finding(file: &str, msg: &EslintMessage) -> Finding {
 }
 
 fn normalize_line_col(value: i32) -> i32 {
-    if value < 1 { 1 } else { value }
+    if value < 1 {
+        1
+    } else {
+        value
+    }
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -145,8 +149,12 @@ mod tests {
     }
 
     fn make_message(rule: Option<&str>, sev: i32, line: i32, col: i32, msg: &str) -> String {
-        let rule_field = rule.map(|r| format!(r#""ruleId":"{r}","#)).unwrap_or_default();
-        format!(r#"{{{rule_field}"severity":{sev},"line":{line},"column":{col},"message":"{msg}"}}"#)
+        let rule_field = rule
+            .map(|r| format!(r#""ruleId":"{r}","#))
+            .unwrap_or_default();
+        format!(
+            r#"{{{rule_field}"severity":{sev},"line":{line},"column":{col},"message":"{msg}"}}"#
+        )
     }
 
     #[test]
@@ -213,7 +221,10 @@ mod tests {
     #[test]
     fn truncate_does_not_add_dots_when_not_needed() {
         let short_msg = "short message";
-        let json = make_eslint_json(Some("/ws/f.js"), &make_message(Some("r"), 2, 1, 1, short_msg));
+        let json = make_eslint_json(
+            Some("/ws/f.js"),
+            &make_message(Some("r"), 2, 1, 1, short_msg),
+        );
         let findings = parse(&json, "/ws").unwrap();
         assert_eq!(findings[0].message, short_msg);
         assert!(!findings[0].message.ends_with("..."));
@@ -224,7 +235,10 @@ mod tests {
         // Multi-byte UTF-8 characters (emoji = 4 bytes each)
         // Using chars that exceed MAX_MESSAGE_LENGTH to verify we don't split mid-character
         let emoji_msg = "🔥".repeat(1500); // 1500 emoji > MAX_MESSAGE_LENGTH (1000)
-        let json = make_eslint_json(Some("/ws/f.js"), &make_message(Some("r"), 2, 1, 1, &emoji_msg));
+        let json = make_eslint_json(
+            Some("/ws/f.js"),
+            &make_message(Some("r"), 2, 1, 1, &emoji_msg),
+        );
         let findings = parse(&json, "/ws").unwrap();
         // Result should be truncated to MAX_MESSAGE_LENGTH chars
         assert_eq!(findings[0].message.chars().count(), MAX_MESSAGE_LENGTH);
@@ -236,7 +250,10 @@ mod tests {
 
     #[test]
     fn parse_malformed_json_returns_error() {
-        assert!(matches!(parse("bad json", "/ws"), Err(ParseError::InvalidJson(_))));
+        assert!(matches!(
+            parse("bad json", "/ws"),
+            Err(ParseError::InvalidJson(_))
+        ));
     }
 
     #[test]

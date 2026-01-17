@@ -111,14 +111,16 @@ pub fn get_recent_runs(
             run_id: row.get(0)?,
         })
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
 }
 
 /// Gets all `stable_ids` for a given run.
 pub fn get_stable_ids_for_run(conn: &Connection, run_id: &str) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT stable_id FROM test_failures WHERE run_id = ?1")?;
     let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
 }
 
 /// Inserts findings in batch.
@@ -156,7 +158,8 @@ pub fn get_finding_stable_ids_for_run(
 ) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT stable_id FROM findings WHERE run_id = ?1")?;
     let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
 }
 
 #[cfg(test)]
@@ -182,13 +185,24 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_correct_tables_and_indices() {
+    fn schema_has_runs_table() {
         let (_dir, conn) = setup();
         // Runs table with workspace_id
-        conn.prepare("SELECT workspace_id FROM runs LIMIT 0").unwrap();
+        conn.prepare("SELECT workspace_id FROM runs LIMIT 0")
+            .unwrap();
+    }
+
+    #[test]
+    fn schema_has_test_failures_table() {
+        let (_dir, conn) = setup();
         // Test failures table
         conn.prepare("SELECT stable_id, test_id FROM test_failures LIMIT 0")
             .unwrap();
+    }
+
+    #[test]
+    fn schema_has_required_indices() {
+        let (_dir, conn) = setup();
         // Indices exist
         let idx_count: i32 = conn
             .query_row(
@@ -233,11 +247,15 @@ mod tests {
     }
 
     #[test]
-    fn error_on_invalid_storage() {
+    fn init_fails_on_invalid_path() {
         let dir = tempdir().unwrap();
         let bad_path = dir.path().join("nonexistent");
         assert!(init_storage(&bad_path).is_err());
+    }
 
+    #[test]
+    fn init_fails_on_corrupt_db() {
+        let dir = tempdir().unwrap();
         let corrupt_db = dir.path().join("corrupt");
         fs::create_dir(&corrupt_db).unwrap();
         fs::write(corrupt_db.join("db.sqlite"), b"garbage").unwrap();

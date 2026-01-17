@@ -125,7 +125,13 @@ fn extract_message(failure_messages: &[String]) -> String {
 
 fn truncate_message(message: &str) -> String {
     if message.chars().count() > MAX_MESSAGE_LENGTH {
-        format!("{}...", message.chars().take(MAX_MESSAGE_LENGTH - 3).collect::<String>())
+        format!(
+            "{}...",
+            message
+                .chars()
+                .take(MAX_MESSAGE_LENGTH - 3)
+                .collect::<String>()
+        )
     } else {
         message.to_string()
     }
@@ -137,19 +143,34 @@ mod tests {
     use super::*;
 
     fn make_json(name: &str, status: &str, msg: Option<&str>, assertions: &str) -> String {
-        let msg_field = msg.map(|m| format!(r#""message": "{m}","#)).unwrap_or_default();
-        format!(r#"{{"testResults":[{{"name":"{name}","status":"{status}",{msg_field}"assertionResults":[{assertions}]}}]}}"#)
+        let msg_field = msg
+            .map(|m| format!(r#""message": "{m}","#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"testResults":[{{"name":"{name}","status":"{status}",{msg_field}"assertionResults":[{assertions}]}}]}}"#
+        )
     }
 
     fn assertion(ancestors: &[&str], title: &str, status: &str, msg: &str) -> String {
-        let anc = ancestors.iter().map(|a| format!(r#""{a}""#)).collect::<Vec<_>>().join(",");
-        format!(r#"{{"ancestorTitles":[{anc}],"title":"{title}","status":"{status}","failureMessages":["{msg}"]}}"#)
+        let anc = ancestors
+            .iter()
+            .map(|a| format!(r#""{a}""#))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r#"{{"ancestorTitles":[{anc}],"title":"{title}","status":"{status}","failureMessages":["{msg}"]}}"#
+        )
     }
 
     #[test]
     fn parse_extracts_failures_and_handles_edge_cases() {
         // Valid failure
-        let json = make_json("/ws/src/t.ts", "failed", None, &assertion(&["A", "B"], "test", "failed", "err"));
+        let json = make_json(
+            "/ws/src/t.ts",
+            "failed",
+            None,
+            &assertion(&["A", "B"], "test", "failed", "err"),
+        );
         let f = parse(&json, "/ws").unwrap();
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].test_id, "A > B > test");
@@ -159,10 +180,18 @@ mod tests {
         assert!(parse(r#"{"testResults":[]}"#, "/ws").unwrap().is_empty());
 
         // Malformed JSON
-        assert!(matches!(parse("bad", "/ws"), Err(ParseError::InvalidJson(_))));
+        assert!(matches!(
+            parse("bad", "/ws"),
+            Err(ParseError::InvalidJson(_))
+        ));
 
         // Passing test skipped
-        let pass = make_json("/ws/t.ts", "passed", None, &assertion(&[], "ok", "passed", ""));
+        let pass = make_json(
+            "/ws/t.ts",
+            "passed",
+            None,
+            &assertion(&[], "ok", "passed", ""),
+        );
         assert!(parse(&pass, "/ws").unwrap().is_empty());
     }
 
@@ -170,14 +199,24 @@ mod tests {
     fn parse_truncates_and_handles_empty_messages() {
         // Truncation - verify length and "..." suffix
         let long = "x".repeat(1500);
-        let json = make_json("/ws/t.ts", "failed", None, &assertion(&[], "t", "failed", &long));
+        let json = make_json(
+            "/ws/t.ts",
+            "failed",
+            None,
+            &assertion(&[], "t", "failed", &long),
+        );
         let result = parse(&json, "/ws").unwrap();
         assert_eq!(result[0].message.len(), MAX_MESSAGE_LENGTH);
         assert!(result[0].message.ends_with("..."));
 
         // Short message - no truncation, no "..."
         let short = "short error";
-        let json2 = make_json("/ws/t.ts", "failed", None, &assertion(&[], "t", "failed", short));
+        let json2 = make_json(
+            "/ws/t.ts",
+            "failed",
+            None,
+            &assertion(&[], "t", "failed", short),
+        );
         let result2 = parse(&json2, "/ws").unwrap();
         assert_eq!(result2[0].message, short);
         assert!(!result2[0].message.ends_with("..."));
@@ -195,7 +234,12 @@ mod tests {
         assert_eq!(f[0].test_id, "src/b.ts::file-error");
 
         // Nested describe
-        let nested = make_json("/ws/t.ts", "failed", None, &assertion(&["A", "B", "C"], "d", "failed", "e"));
+        let nested = make_json(
+            "/ws/t.ts",
+            "failed",
+            None,
+            &assertion(&["A", "B", "C"], "d", "failed", "e"),
+        );
         assert_eq!(parse(&nested, "/ws").unwrap()[0].test_id, "A > B > C > d");
     }
 }
