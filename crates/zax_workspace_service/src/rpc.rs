@@ -264,20 +264,56 @@ mod tests {
     use crate::store::{init_storage, open_connection};
     use crate::zax::v1::ArtifactRef;
     use std::fs;
-    use tempfile::tempdir;
+    use tempfile::TempDir;
 
-    fn create_test_state() -> (tempfile::TempDir, RpcState) {
-        let temp_dir = tempdir().unwrap();
-        init_storage(temp_dir.path()).unwrap();
-        let conn = open_connection(temp_dir.path()).unwrap();
-        let cache_dir = temp_dir.path().to_path_buf();
-        (
-            temp_dir,
-            RpcState {
-                cache_dir,
-                conn: Arc::new(Mutex::new(conn)),
-            },
-        )
+    struct TestHelper {
+        _dir: TempDir,
+        state: RpcState,
+    }
+
+    impl TestHelper {
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            init_storage(temp_dir.path()).unwrap();
+            let conn = open_connection(temp_dir.path()).unwrap();
+            let cache_dir = temp_dir.path().to_path_buf();
+            Self {
+                _dir: temp_dir,
+                state: RpcState {
+                    cache_dir,
+                    conn: Arc::new(Mutex::new(conn)),
+                },
+            }
+        }
+
+        fn insert_run(&self, workspace: &str, run: &str, time: i64) {
+            let mut conn = self.state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, workspace, run, time).unwrap();
+            store::complete_run(&tx, run, time + 1).unwrap();
+            tx.commit().unwrap();
+        }
+
+        fn insert_run_with_data(
+            &self,
+            workspace: &str,
+            run: &str,
+            time: i64,
+            failures: &[TestFailureRow],
+            findings: &[FindingRow],
+        ) {
+            let mut conn = self.state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_run(&tx, workspace, run, time).unwrap();
+            if !failures.is_empty() {
+                store::insert_test_failures(&tx, run, failures).unwrap();
+            }
+            if !findings.is_empty() {
+                store::insert_findings(&tx, run, findings).unwrap();
+            }
+            store::complete_run(&tx, run, time + 1).unwrap();
+            tx.commit().unwrap();
+        }
     }
 
     fn create_manifest(
@@ -300,9 +336,9 @@ mod tests {
 
     #[test]
     fn manifest_validation_rejects_empty_workspace_id() {
-        let (_dir, state) = create_test_state();
+        let helper = TestHelper::new();
         let m = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m)
+        assert!(ingest_manifest(&helper.state, &m)
             .unwrap_err()
             .message()
             .contains("workspace_id"));
@@ -310,9 +346,9 @@ mod tests {
 
     #[test]
     fn manifest_validation_rejects_empty_run_id() {
-        let (_dir, state) = create_test_state();
+        let helper = TestHelper::new();
         let m = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m)
+        assert!(ingest_manifest(&helper.state, &m)
             .unwrap_err()
             .message()
             .contains("run_id"));
@@ -320,8 +356,8 @@ mod tests {
 
     #[test]
     fn delta_validation_rejects_empty_workspace() {
-        let (_dir, state) = create_test_state();
-        assert!(get_delta_summary(&state, "")
+        let helper = TestHelper::new();
+        assert!(get_delta_summary(&helper.state, "")
             .unwrap_err()
             .message()
             .contains("workspace_id"));
@@ -329,12 +365,13 @@ mod tests {
 
     #[test]
     fn path_traversal_rejected() {
-        let (temp_dir, state) = create_test_state();
-        let artifacts_dir = temp_dir.path().join("artifacts");
+        let helper = TestHelper::new();
+        let artifacts_dir = helper.state.cache_dir.join("artifacts");
         fs::create_dir_all(&artifacts_dir).unwrap();
-        fs::write(temp_dir.path().join("secret.txt"), "secret").unwrap();
+        fs::write(helper.state.cache_dir.join("secret.txt"), "secret").unwrap();
         let path = artifacts_dir.join("..").join("secret.txt");
-        let err = validate_artifact_path(&state.cache_dir, path.to_str().unwrap()).unwrap_err();
+        let err =
+            validate_artifact_path(&helper.state.cache_dir, path.to_str().unwrap()).unwrap_err();
         assert!(err.message().contains("outside"));
     }
 
@@ -344,28 +381,71 @@ mod tests {
     }
 
     #[test]
-    fn delta_with_findings_and_failures() {
-        let (_dir, state) = create_test_state();
-        // Run 1
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_test_failures(
-                &tx,
-                "run1",
-                &[TestFailureRow {
-                    stable_id: "tf1".into(),
-                    test_id: "t1".into(),
-                    file: "f".into(),
-                    message: "m".into(),
-                }],
-            )
-            .unwrap();
-            store::insert_findings(
-                &tx,
-                "run1",
-                &[FindingRow {
+    fn delta_correctly_counts_test_failures() {
+        let helper = TestHelper::new();
+        helper.insert_run_with_data(
+            "ws1",
+            "run1",
+            1000,
+            &[TestFailureRow {
+                stable_id: "tf1".into(),
+                test_id: "t1".into(),
+                file: "f".into(),
+                message: "m".into(),
+            }],
+            &[],
+        );
+        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        assert_eq!(result.new_test_failures, 1);
+        assert_eq!(result.fixed_test_failures, 0);
+    }
+
+    #[test]
+    fn delta_correctly_counts_findings() {
+        let helper = TestHelper::new();
+        helper.insert_run_with_data(
+            "ws1",
+            "run1",
+            1000,
+            &[],
+            &[FindingRow {
+                stable_id: "f1".into(),
+                tool: "eslint".into(),
+                rule: "r".into(),
+                file: "f".into(),
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+                message: "m".into(),
+            }],
+        );
+        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        assert_eq!(result.new_findings, 1);
+        assert_eq!(result.fixed_findings, 0);
+    }
+
+    // P18: Empty findings delta
+    #[test]
+    fn delta_with_no_findings_returns_zero() {
+        let helper = TestHelper::new();
+        helper.insert_run("ws1", "run1", 1000);
+        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        assert_eq!(result.new_findings, 0);
+        assert_eq!(result.fixed_findings, 0);
+    }
+
+    // P17: First run baseline - all findings are new
+    #[test]
+    fn first_run_all_findings_are_new() {
+        let helper = TestHelper::new();
+        helper.insert_run_with_data(
+            "ws1",
+            "run1",
+            1000,
+            &[],
+            &[
+                FindingRow {
                     stable_id: "f1".into(),
                     tool: "eslint".into(),
                     rule: "r".into(),
@@ -375,77 +455,21 @@ mod tests {
                     end_line: 1,
                     end_column: 1,
                     message: "m".into(),
-                }],
-            )
-            .unwrap();
-            store::complete_run(&tx, "run1", 1001).unwrap();
-            tx.commit().unwrap();
-        }
-        let result = get_delta_summary(&state, "ws1").unwrap();
-        assert_eq!(result.new_test_failures, 1);
-        assert_eq!(result.fixed_test_failures, 0);
-        assert_eq!(result.new_findings, 1);
-        assert_eq!(result.fixed_findings, 0);
-    }
-
-    // P18: Empty findings delta
-    #[test]
-    fn delta_with_no_findings_returns_zero() {
-        let (_dir, state) = create_test_state();
-        // Run with no findings
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::complete_run(&tx, "run1", 1001).unwrap();
-            tx.commit().unwrap();
-        }
-        let result = get_delta_summary(&state, "ws1").unwrap();
-        assert_eq!(result.new_findings, 0);
-        assert_eq!(result.fixed_findings, 0);
-    }
-
-    // P17: First run baseline - all findings are new
-    #[test]
-    fn first_run_all_findings_are_new() {
-        let (_dir, state) = create_test_state();
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_findings(
-                &tx,
-                "run1",
-                &[
-                    FindingRow {
-                        stable_id: "f1".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 1,
-                        start_column: 1,
-                        end_line: 1,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                    FindingRow {
-                        stable_id: "f2".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 2,
-                        start_column: 1,
-                        end_line: 2,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                ],
-            )
-            .unwrap();
-            store::complete_run(&tx, "run1", 1001).unwrap();
-            tx.commit().unwrap();
-        }
-        let result = get_delta_summary(&state, "ws1").unwrap();
+                },
+                FindingRow {
+                    stable_id: "f2".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 2,
+                    start_column: 1,
+                    end_line: 2,
+                    end_column: 1,
+                    message: "m".into(),
+                },
+            ],
+        );
+        let result = get_delta_summary(&helper.state, "ws1").unwrap();
         assert_eq!(result.new_findings, 2);
         assert_eq!(result.fixed_findings, 0);
     }
@@ -453,82 +477,70 @@ mod tests {
     // P16: Delta computation - finds new and fixed findings
     #[test]
     fn delta_detects_new_and_fixed_findings() {
-        let (_dir, state) = create_test_state();
+        let helper = TestHelper::new();
         // Run 1: has f1, f2
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run1", 1000).unwrap();
-            store::insert_findings(
-                &tx,
-                "run1",
-                &[
-                    FindingRow {
-                        stable_id: "f1".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 1,
-                        start_column: 1,
-                        end_line: 1,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                    FindingRow {
-                        stable_id: "f2".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 2,
-                        start_column: 1,
-                        end_line: 2,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                ],
-            )
-            .unwrap();
-            store::complete_run(&tx, "run1", 1001).unwrap();
-            tx.commit().unwrap();
-        }
+        helper.insert_run_with_data(
+            "ws1",
+            "run1",
+            1000,
+            &[],
+            &[
+                FindingRow {
+                    stable_id: "f1".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    message: "m".into(),
+                },
+                FindingRow {
+                    stable_id: "f2".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 2,
+                    start_column: 1,
+                    end_line: 2,
+                    end_column: 1,
+                    message: "m".into(),
+                },
+            ],
+        );
         // Run 2: has f1, f3 (f2 fixed, f3 new)
-        {
-            let mut conn = state.conn.lock().unwrap();
-            let tx = conn.transaction().unwrap();
-            store::insert_run(&tx, "ws1", "run2", 2000).unwrap();
-            store::insert_findings(
-                &tx,
-                "run2",
-                &[
-                    FindingRow {
-                        stable_id: "f1".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 1,
-                        start_column: 1,
-                        end_line: 1,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                    FindingRow {
-                        stable_id: "f3".into(),
-                        tool: "eslint".into(),
-                        rule: "r".into(),
-                        file: "f".into(),
-                        start_line: 3,
-                        start_column: 1,
-                        end_line: 3,
-                        end_column: 1,
-                        message: "m".into(),
-                    },
-                ],
-            )
-            .unwrap();
-            store::complete_run(&tx, "run2", 2001).unwrap();
-            tx.commit().unwrap();
-        }
-        let result = get_delta_summary(&state, "ws1").unwrap();
+        helper.insert_run_with_data(
+            "ws1",
+            "run2",
+            2000,
+            &[],
+            &[
+                FindingRow {
+                    stable_id: "f1".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    message: "m".into(),
+                },
+                FindingRow {
+                    stable_id: "f3".into(),
+                    tool: "eslint".into(),
+                    rule: "r".into(),
+                    file: "f".into(),
+                    start_line: 3,
+                    start_column: 1,
+                    end_line: 3,
+                    end_column: 1,
+                    message: "m".into(),
+                },
+            ],
+        );
+        let result = get_delta_summary(&helper.state, "ws1").unwrap();
         assert_eq!(result.new_findings, 1); // f3 is new
         assert_eq!(result.fixed_findings, 1); // f2 is fixed
     }
