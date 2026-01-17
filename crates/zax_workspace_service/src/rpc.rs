@@ -299,15 +299,20 @@ mod tests {
     }
 
     #[test]
-    fn manifest_validation_rejects_empty_fields() {
+    fn manifest_validation_rejects_empty_workspace_id() {
         let (_dir, state) = create_test_state();
-        let m1 = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m1)
+        let m = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
+        assert!(ingest_manifest(&state, &m)
             .unwrap_err()
             .message()
             .contains("workspace_id"));
-        let m2 = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&state, &m2)
+    }
+
+    #[test]
+    fn manifest_validation_rejects_empty_run_id() {
+        let (_dir, state) = create_test_state();
+        let m = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
+        assert!(ingest_manifest(&state, &m)
             .unwrap_err()
             .message()
             .contains("run_id"));
