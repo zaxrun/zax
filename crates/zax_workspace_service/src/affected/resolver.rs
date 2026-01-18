@@ -4,7 +4,7 @@
 //! package.json exports, and various module resolution strategies.
 #![allow(clippy::print_stderr)]
 
-use oxc_resolver::{ResolveOptions, Resolver, TsconfigOptions, TsconfigReferences};
+use oxc_resolver::{ResolveOptions, Resolver, TsconfigDiscovery, TsconfigOptions, TsconfigReferences};
 use std::path::{Path, PathBuf};
 
 /// Maximum path length for logging.
@@ -77,24 +77,17 @@ fn build_resolve_options(tsconfig_path: PathBuf) -> ResolveOptions {
             ".cts".into(),
             ".cjs".into(),
         ],
-        main_files: vec![
-            "index.ts".into(),
-            "index.tsx".into(),
-            "index.js".into(),
-            "index.jsx".into(),
-            "index.mts".into(),
-            "index.mjs".into(),
-        ],
+        main_files: vec!["index".into()],
         condition_names: vec![
             "import".into(),
             "require".into(),
             "node".into(),
             "default".into(),
         ],
-        tsconfig: Some(TsconfigOptions {
+        tsconfig: Some(TsconfigDiscovery::Manual(TsconfigOptions {
             config_file: tsconfig_path,
             references: TsconfigReferences::Disabled,
-        }),
+        })),
         ..Default::default()
     }
 }
@@ -141,7 +134,7 @@ mod tests {
 
     fn setup_workspace_no_tsconfig() -> (tempfile::TempDir, PathResolver) {
         let dir = tempdir().unwrap();
-        // Create resolver without tsconfig (uses default options)
+        // Create resolver without tsconfig (uses production-like options)
         let options = ResolveOptions {
             extensions: vec![
                 ".ts".into(),
@@ -149,7 +142,13 @@ mod tests {
                 ".js".into(),
                 ".jsx".into(),
             ],
-            main_files: vec!["index.ts".into(), "index.tsx".into(), "index.js".into()],
+            main_files: vec!["index".into()],
+            condition_names: vec![
+                "import".into(),
+                "require".into(),
+                "node".into(),
+                "default".into(),
+            ],
             ..Default::default()
         };
         let resolver = PathResolver {

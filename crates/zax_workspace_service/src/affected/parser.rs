@@ -4,7 +4,7 @@
 #![allow(clippy::print_stderr)]
 
 use std::path::Path;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
 /// Maximum number of imports to extract per file.
 const MAX_IMPORTS_PER_FILE: usize = 500;
@@ -109,9 +109,9 @@ fn extract_imports(content: &str, root: &tree_sitter::Node) -> Vec<ImportStateme
     };
 
     let mut cursor = QueryCursor::new();
-    let matches = cursor.matches(&query, *root, content.as_bytes());
+    let mut matches = cursor.matches(&query, *root, content.as_bytes());
 
-    for m in matches {
+    while let Some(m) = matches.next() {
         for capture in m.captures {
             let node = capture.node;
             if capture.index == query.capture_index_for_name("source").unwrap_or(999) {
