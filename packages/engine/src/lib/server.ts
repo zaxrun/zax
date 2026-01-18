@@ -113,6 +113,7 @@ async function handleVersion(
 interface CheckRequestBody {
   workspace_id: string;
   workspace_root: string;
+  deopt?: boolean;
 }
 
 async function parseCheckRequest(req: Request): Promise<CheckRequestBody | null> {
@@ -162,6 +163,7 @@ async function handleCheck(
       workspaceId: body!.workspace_id,
       workspaceRoot: body!.workspace_root,
       rustClient: client,
+      deopt: body!.deopt,
     });
     return jsonResponse({
       new_test_failures: result.newTestFailures,
@@ -170,6 +172,10 @@ async function handleCheck(
       fixed_findings: result.fixedFindings,
       eslint_skipped: result.eslintSkipped,
       eslint_skip_reason: result.eslintSkipReason,
+      affected_count: result.affectedCount,
+      skipped_count: result.skippedCount,
+      dirty_count: result.dirtyCount,
+      vitest_skipped: result.vitestSkipped,
     }, 200, headers);
   } catch (err) {
     return mapCheckError(err as CheckError, headers);

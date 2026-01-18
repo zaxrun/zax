@@ -16,6 +16,10 @@ interface CheckResponse {
   fixed_findings: number;
   eslint_skipped: boolean;
   eslint_skip_reason?: string;
+  affected_count: number;
+  skipped_count: number;
+  dirty_count: number;
+  vitest_skipped: boolean;
 }
 
 interface ErrorResponse {
@@ -84,7 +88,8 @@ export async function getVersion(socketPath: string): Promise<string> {
 export async function postCheck(
   socketPath: string,
   workspaceId: string,
-  workspaceRoot: string
+  workspaceRoot: string,
+  deopt?: boolean
 ): Promise<CheckResponse> {
   if (!existsSync(socketPath)) {
     throw new Error("Engine socket not found");
@@ -95,11 +100,18 @@ export async function postCheck(
 
   try {
     const url = `http://localhost/check`;
+    const body: Record<string, unknown> = {
+      workspace_id: workspaceId,
+      workspace_root: workspaceRoot,
+    };
+    if (deopt) {
+      body.deopt = true;
+    }
     const response = await fetch(url, {
       unix: socketPath,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_id: workspaceId, workspace_root: workspaceRoot }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     } as RequestInit);
 

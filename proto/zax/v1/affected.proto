@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package zax.v1;
+
+// Request for GetAffectedTests RPC.
+message GetAffectedTestsRequest {
+  // Workspace identifier (BLAKE3 hash of cwd).
+  string workspace_id = 1;
+  // Force full test run, bypassing affected selection.
+  bool force_full = 2;
+}
+
+// Response from GetAffectedTests RPC.
+message GetAffectedTestsResponse {
+  // Workspace-relative paths to affected test files.
+  repeated string test_files = 1;
+  // Workspace-relative paths to dirty files (for debugging).
+  repeated string dirty_files = 2;
+  // True if full run required (config change, force_full, or overflow).
+  bool is_full_run = 3;
+}

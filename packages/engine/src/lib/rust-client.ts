@@ -1,6 +1,7 @@
 import { createClient, type Client } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { WorkspaceService, type PingResponse } from "../gen/zax/v1/workspace_pb.js";
+import type { GetAffectedTestsResponse } from "../gen/zax/v1/affected_pb.js";
 import { existsSync, readFileSync } from "node:fs";
 
 const PORT_FILE_POLL_INTERVAL_MS = 100;
@@ -63,4 +64,23 @@ export async function pingWithRetry(
   }
 
   throw lastError ?? new Error("All ping retries failed");
+}
+
+const AFFECTED_TIMEOUT_MS = 5000;
+
+export async function getAffectedTests(
+  client: RustClient,
+  workspaceId: string,
+  forceFull: boolean
+): Promise<GetAffectedTestsResponse> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), AFFECTED_TIMEOUT_MS);
+  try {
+    return await client.getAffectedTests(
+      { workspaceId, forceFull },
+      { signal: controller.signal }
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }

@@ -23,6 +23,7 @@ function printUsage(): void {
   console.log("Options:");
   console.log("  -v, --version    Print version");
   console.log("  -h, --help       Print help");
+  console.log("  --deopt          Disable affected test selection (run all tests)");
 }
 
 function printError(message: string): void {
@@ -36,6 +37,10 @@ interface CheckResult {
   fixed_findings: number;
   eslint_skipped?: boolean;
   eslint_skip_reason?: string;
+  affected_count: number;
+  skipped_count: number;
+  dirty_count: number;
+  vitest_skipped: boolean;
 }
 
 export function formatCheckOutput(result: CheckResult): string {
@@ -52,6 +57,24 @@ export function computeExitCode(result: CheckResult): number {
 export function formatSkipMessage(result: CheckResult): string | undefined {
   if (!result.eslint_skipped) { return undefined; }
   return `eslint: skipped (${result.eslint_skip_reason ?? "unknown"})`;
+}
+
+/** Formats affected summary line. Returns undefined if deopt mode. */
+export function formatAffectedSummary(result: CheckResult, deopt: boolean): string | undefined {
+  if (deopt) { return undefined; }
+  return `\u0394 ${result.dirty_count} files changed \u2192 ${result.affected_count} tests affected`;
+}
+
+/** Formats completion summary with skipped count. */
+export function formatCompletionSummary(
+  result: CheckResult,
+  deopt: boolean,
+  durationSecs: number
+): string {
+  const passCount = result.new_test_failures === 0 ? "all" : "some";
+  const base = `${passCount} tests passed in ${durationSecs.toFixed(1)}s`;
+  if (deopt || result.vitest_skipped) { return base; }
+  return `${base} (skipped ${result.skipped_count} unaffected)`;
 }
 
 /** Gets Engine path - binary in same dir when compiled, source file otherwise. */
@@ -79,7 +102,7 @@ async function waitForSocket(socketPath: string): Promise<boolean> {
   return false;
 }
 
-async function spawnEngine(cacheDir: string): Promise<void> {
+async function spawnEngine(cacheDir: string, workspaceRoot: string): Promise<void> {
   const enginePath = getEnginePath();
 
   if (isCompiledBinary() && !existsSync(enginePath)) {
@@ -87,15 +110,15 @@ async function spawnEngine(cacheDir: string): Promise<void> {
   }
 
   const cmd = isCompiledBinary()
-    ? [enginePath, cacheDir]
-    : ["bun", "run", enginePath, cacheDir];
+    ? [enginePath, cacheDir, workspaceRoot]
+    : ["bun", "run", enginePath, cacheDir, workspaceRoot];
 
   Bun.spawn(cmd, {
     stdio: ["ignore", "ignore", "ignore"],
   });
 }
 
-async function ensureEngine(cacheDir: string): Promise<string> {
+async function ensureEngine(cacheDir: string, workspaceRoot: string): Promise<string> {
   const socketPath = join(cacheDir, "zax.sock");
   const lockDir = join(cacheDir, "engine.lock");
 
@@ -111,7 +134,7 @@ async function ensureEngine(cacheDir: string): Promise<string> {
       }
     }
 
-    await spawnEngine(cacheDir);
+    await spawnEngine(cacheDir, workspaceRoot);
 
     const found = await waitForSocket(socketPath);
     if (!found) {
@@ -124,9 +147,9 @@ async function ensureEngine(cacheDir: string): Promise<string> {
   }
 }
 
-async function handleVersion(cacheDir: string): Promise<void> {
+async function handleVersion(cacheDir: string, cwd: string): Promise<void> {
   try {
-    const socketPath = await ensureEngine(cacheDir);
+    const socketPath = await ensureEngine(cacheDir, cwd);
     const version = await getVersion(socketPath);
     console.log(`zax ${version}`);
     process.exit(0);
@@ -141,15 +164,31 @@ async function handleVersion(cacheDir: string): Promise<void> {
   }
 }
 
-async function handleCheck(cacheDir: string, workspaceId: string, cwd: string): Promise<void> {
+async function handleCheck(
+  cacheDir: string,
+  workspaceId: string,
+  cwd: string,
+  deopt: boolean
+): Promise<void> {
   try {
-    const socketPath = await ensureEngine(cacheDir);
-    const result = await postCheck(socketPath, workspaceId, cwd);
+    const startTime = Date.now();
+    const socketPath = await ensureEngine(cacheDir, cwd);
+    const result = await postCheck(socketPath, workspaceId, cwd, deopt);
+    const durationSecs = (Date.now() - startTime) / 1000;
+
+    // Display affected summary (before test output)
+    const affectedMsg = formatAffectedSummary(result, deopt);
+    if (affectedMsg) { console.log(affectedMsg); }
 
     const skipMsg = formatSkipMessage(result);
     if (skipMsg) { console.log(skipMsg); }
 
+    if (result.vitest_skipped) {
+      console.log("No tests affected, skipping vitest");
+    }
+
     console.log(formatCheckOutput(result));
+    console.log(formatCompletionSummary(result, deopt, durationSecs));
     process.exit(computeExitCode(result));
   } catch (error) {
     printError(error instanceof Error ? error.message : String(error));
@@ -179,7 +218,7 @@ async function main(): Promise<void> {
   const arg = args[0];
 
   if (arg === "--version" || arg === "-v") {
-    await handleVersion(cacheDir);
+    await handleVersion(cacheDir, cwd);
     return;
   }
 
@@ -189,7 +228,8 @@ async function main(): Promise<void> {
   }
 
   if (arg === "check") {
-    await handleCheck(cacheDir, workspaceId, cwd);
+    const deopt = args.includes("--deopt");
+    await handleCheck(cacheDir, workspaceId, cwd, deopt);
     return;
   }
 

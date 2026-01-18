@@ -3,6 +3,7 @@ syntax = "proto3";
 package zax.v1;
 
 import "zax/v1/artifacts.proto";
+import "zax/v1/affected.proto";
 
 message PingRequest {}
 
@@ -31,4 +32,5 @@ service WorkspaceService {
   rpc Ping(PingRequest) returns (PingResponse);
   rpc IngestManifest(IngestManifestRequest) returns (IngestManifestResponse);
   rpc GetDeltaSummary(GetDeltaSummaryRequest) returns (GetDeltaSummaryResponse);
+  rpc GetAffectedTests(GetAffectedTestsRequest) returns (GetAffectedTestsResponse);
 }

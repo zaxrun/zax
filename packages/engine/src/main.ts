@@ -10,6 +10,7 @@ const RETRY_DELAYS = [500, 1000, 2000];
 const RUST_SHUTDOWN_TIMEOUT_MS = 2000;
 
 let cacheDir = "";
+let workspaceRoot = "";
 
 /** Returns true if running as a compiled Bun binary. */
 function isCompiledBinary(): boolean {
@@ -41,11 +42,11 @@ async function spawnRustService(): Promise<Subprocess> {
     throw new Error(`Rust binary not found: ${binaryPath}`);
   }
 
-  log(`Spawning Rust service: ${binaryPath} ${cacheDir}`);
+  log(`Spawning Rust service: ${binaryPath} ${cacheDir} ${workspaceRoot}`);
 
   const logFd = openSync(getLogPath(), "a");
 
-  const proc = Bun.spawn([binaryPath, cacheDir], {
+  const proc = Bun.spawn([binaryPath, cacheDir, workspaceRoot], {
     stdout: logFd,
     stderr: logFd,
   });
@@ -102,18 +103,23 @@ export function cleanStalePortFile(dir: string): boolean {
   return false;
 }
 
-function parseArgs(): string {
+function parseArgs(): { cacheDir: string; workspaceRoot: string } {
   const args = process.argv.slice(2);
-  if (args.length < 1) {
-    printError("cache directory argument required");
+  if (args.length < 2) {
+    printError("Usage: zx-engine <cache_dir> <workspace_root>");
     process.exit(1);
   }
   const dir = args[0];
+  const wsRoot = args[1];
   if (!existsSync(dir)) {
     printError(`cache directory does not exist: ${dir}`);
     process.exit(1);
   }
-  return dir;
+  if (!existsSync(wsRoot)) {
+    printError(`workspace root does not exist: ${wsRoot}`);
+    process.exit(1);
+  }
+  return { cacheDir: dir, workspaceRoot: wsRoot };
 }
 
 async function startRustService(): Promise<{ proc: Subprocess; client: ReturnType<typeof createRustClient> }> {
@@ -144,9 +150,11 @@ function setupSignalHandlers(server: ReturnType<typeof createEngineServer>, rust
 }
 
 async function main(): Promise<void> {
-  cacheDir = parseArgs();
+  const args = parseArgs();
+  cacheDir = args.cacheDir;
+  workspaceRoot = args.workspaceRoot;
   initLogger(cacheDir);
-  log("Engine starting...");
+  log(`Engine starting for workspace: ${workspaceRoot}`);
   writePidFile();
 
   let rustProc: Subprocess | undefined;

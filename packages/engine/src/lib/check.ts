@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { ArtifactKind, ArtifactManifestSchema, ArtifactRefSchema, type ArtifactRef } from "../gen/zax/v1/artifacts_pb.js";
-import type { RustClient } from "./rust-client.js";
+import { type RustClient, getAffectedTests } from "./rust-client.js";
 import { log } from "./logger.js";
 
 const VITEST_TIMEOUT_MS = 300_000;
@@ -15,6 +15,7 @@ export interface CheckOptions {
   workspaceId: string;
   workspaceRoot: string;
   rustClient: RustClient;
+  deopt?: boolean;
 }
 
 export interface CheckResult {
@@ -24,6 +25,10 @@ export interface CheckResult {
   fixedFindings: number;
   eslintSkipped: boolean;
   eslintSkipReason?: string;
+  affectedCount: number;
+  skippedCount: number;
+  dirtyCount: number;
+  vitestSkipped: boolean;
 }
 
 export type CheckErrorCode =
@@ -53,15 +58,41 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
 }
 
 async function executeCheck(options: CheckOptions): Promise<CheckResult> {
-  const { cacheDir, workspaceId, workspaceRoot, rustClient } = options;
+  const { cacheDir, workspaceId, workspaceRoot, rustClient, deopt } = options;
   const runId = crypto.randomUUID();
   const artifactsDir = join(cacheDir, "artifacts", runId);
   mkdirSync(artifactsDir, { recursive: true });
 
+  // Get affected tests from Rust service
+  const forceFull = deopt ?? false;
+  const affected = await getAffectedTests(rustClient, workspaceId, forceFull);
+  const dirtyCount = affected.dirtyFiles.length;
+  const affectedCount = affected.testFiles.length;
+  log(`Affected: dirty=${dirtyCount}, tests=${affectedCount}, full_run=${affected.isFullRun}`);
+
   const vitestPath = join(artifactsDir, "vitest.json");
-  await spawnVitest(workspaceRoot, vitestPath);
+  let vitestSkipped = false;
+  let skippedCount = 0;
+
+  if (affected.isFullRun) {
+    // Full run: no file arguments
+    await spawnVitest(workspaceRoot, vitestPath);
+  } else if (affectedCount > 0) {
+    // Selective run: pass test files as arguments
+    await spawnVitest(workspaceRoot, vitestPath, affected.testFiles);
+  } else {
+    // No tests affected: skip vitest entirely
+    vitestSkipped = true;
+    log("No tests affected, skipping vitest");
+  }
+
   if (existsSync(vitestPath)) {
     normalizeVitestPaths(vitestPath, workspaceRoot);
+    // Count skipped tests (only meaningful when we have a vitest output)
+    if (!affected.isFullRun && !vitestSkipped) {
+      // TODO: Parse vitest output to get total test count for skippedCount
+      skippedCount = 0;
+    }
   }
   const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"));
   if (!eslintResult.skipped && eslintResult.outputPath) {
@@ -69,13 +100,29 @@ async function executeCheck(options: CheckOptions): Promise<CheckResult> {
   }
   await ingestArtifacts(rustClient, { workspaceId, runId, vitestPath, eslintResult });
   const delta = await callGetDeltaSummary(rustClient, workspaceId);
-  return { ...delta, eslintSkipped: eslintResult.skipped, eslintSkipReason: eslintResult.skipReason };
+  return {
+    ...delta,
+    eslintSkipped: eslintResult.skipped,
+    eslintSkipReason: eslintResult.skipReason,
+    affectedCount,
+    skippedCount,
+    dirtyCount,
+    vitestSkipped,
+  };
 }
 
-async function spawnVitest(workspaceRoot: string, outputFile: string): Promise<void> {
-  log(`Spawning vitest in ${workspaceRoot}`);
+async function spawnVitest(
+  workspaceRoot: string,
+  outputFile: string,
+  testFiles?: string[]
+): Promise<void> {
+  const cmd = ["npx", "vitest", "run", "--reporter=json", `--outputFile=${outputFile}`];
+  if (testFiles && testFiles.length > 0) {
+    cmd.push(...testFiles);
+  }
+  log(`Spawning vitest in ${workspaceRoot}${testFiles ? ` (${testFiles.length} files)` : ""}`);
   const proc = spawn({
-    cmd: ["npx", "vitest", "run", "--reporter=json", `--outputFile=${outputFile}`],
+    cmd,
     cwd: workspaceRoot, stdout: "pipe", stderr: "pipe",
   });
   let timedOut = false;
