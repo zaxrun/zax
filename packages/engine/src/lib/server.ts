@@ -114,6 +114,24 @@ interface CheckRequestBody {
   workspace_id: string;
   workspace_root: string;
   deopt?: boolean;
+  package_scope?: string;
+}
+
+const PACKAGE_SCOPE_PATTERN = /^[a-zA-Z0-9._@/-]*$/;
+const MAX_PACKAGE_SCOPE_LEN = 1024;
+
+/** Validates package_scope is safe (no path traversal, valid chars, not too long). */
+export function isValidPackageScope(scope: string | undefined): boolean {
+  if (scope === undefined || scope === "") {
+    return true;
+  }
+  if (scope.length > MAX_PACKAGE_SCOPE_LEN) {
+    return false;
+  }
+  if (scope.includes("..")) {
+    return false;
+  }
+  return PACKAGE_SCOPE_PATTERN.test(scope);
 }
 
 async function parseCheckRequest(req: Request): Promise<CheckRequestBody | null> {
@@ -137,6 +155,9 @@ function validateCheckRequest(body: CheckRequestBody | null, headers: Record<str
   }
   if (!isValidWorkspaceRoot(body.workspace_root)) {
     return jsonResponse({ error: "workspace_root must be an existing directory" }, 400, headers);
+  }
+  if (!isValidPackageScope(body.package_scope)) {
+    return jsonResponse({ error: "invalid package_scope format" }, 400, headers);
   }
   return null;
 }
@@ -164,6 +185,7 @@ async function handleCheck(
       workspaceRoot: body!.workspace_root,
       rustClient: client,
       deopt: body!.deopt,
+      packageScope: body!.package_scope,
     });
     return jsonResponse({
       new_test_failures: result.newTestFailures,

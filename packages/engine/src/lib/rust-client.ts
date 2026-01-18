@@ -71,13 +71,14 @@ const AFFECTED_TIMEOUT_MS = 5000;
 export async function getAffectedTests(
   client: RustClient,
   workspaceId: string,
-  forceFull: boolean
+  forceFull: boolean,
+  packageScope: string = ""
 ): Promise<GetAffectedTestsResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), AFFECTED_TIMEOUT_MS);
   try {
     return await client.getAffectedTests(
-      { workspaceId, forceFull },
+      { workspaceId, forceFull, packageScope },
       { signal: controller.signal }
     );
   } finally {

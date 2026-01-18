@@ -6,7 +6,7 @@
 // Allow eprintln! for logging - output goes to engine.log via stderr redirect.
 #![allow(clippy::print_stderr)]
 
-use crate::normalize::stable_id;
+use crate::normalize::{path::validate_package_scope, stable_id};
 use crate::parsers::{eslint, vitest};
 use crate::store::{self, FindingRow, TestFailureRow};
 use crate::zax::v1::{ArtifactKind, ArtifactManifest};
@@ -27,21 +27,37 @@ pub struct RpcState {
 }
 
 /// Handles `IngestManifest` RPC.
-pub fn ingest_manifest(state: &RpcState, manifest: &ArtifactManifest) -> Result<(), Status> {
+pub fn ingest_manifest(
+    state: &RpcState,
+    manifest: &ArtifactManifest,
+    package_scope: &str,
+) -> Result<(), Status> {
     eprintln!(
-        "[rpc] IngestManifest: workspace={}, run={}, artifacts={}",
+        "[rpc] IngestManifest: workspace={}, run={}, artifacts={}, package={}",
         manifest.workspace_id,
         manifest.run_id,
-        manifest.artifacts.len()
+        manifest.artifacts.len(),
+        if package_scope.is_empty() {
+            "<none>"
+        } else {
+            package_scope
+        }
     );
     validate_manifest(manifest)?;
+    validate_package_scope(package_scope)
+        .map_err(|e| Status::invalid_argument(format!("invalid package_scope: {e}")))?;
     let (failures, findings) = parse_artifacts(state, manifest)?;
     eprintln!(
         "[rpc] Parsed: {} test failures, {} findings",
         failures.len(),
         findings.len()
     );
-    store_all(state, manifest, &failures, &findings)
+    let artifacts = ParsedArtifacts {
+        failures: &failures,
+        findings: &findings,
+        package_scope,
+    };
+    store_all(state, manifest, &artifacts)
 }
 
 fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), Status> {
@@ -151,11 +167,17 @@ fn parse_findings(content: &str) -> Result<Vec<FindingRow>, Status> {
         .collect())
 }
 
+/// Parsed artifacts to store.
+struct ParsedArtifacts<'a> {
+    failures: &'a [TestFailureRow],
+    findings: &'a [FindingRow],
+    package_scope: &'a str,
+}
+
 fn store_all(
     state: &RpcState,
     manifest: &ArtifactManifest,
-    failures: &[TestFailureRow],
-    findings: &[FindingRow],
+    artifacts: &ParsedArtifacts,
 ) -> Result<(), Status> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -170,9 +192,9 @@ fn store_all(
         .map_err(|e| Status::internal(format!("transaction error: {e}")))?;
     store::insert_run(&tx, &manifest.workspace_id, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("insert run: {e}")))?;
-    store::insert_test_failures(&tx, &manifest.run_id, failures)
+    store::insert_test_failures(&tx, &manifest.run_id, artifacts.package_scope, artifacts.failures)
         .map_err(|e| Status::internal(format!("insert failures: {e}")))?;
-    store::insert_findings(&tx, &manifest.run_id, findings)
+    store::insert_findings(&tx, &manifest.run_id, artifacts.package_scope, artifacts.findings)
         .map_err(|e| Status::internal(format!("insert findings: {e}")))?;
     store::complete_run(&tx, &manifest.run_id, now)
         .map_err(|e| Status::internal(format!("complete run: {e}")))?;
@@ -191,18 +213,32 @@ pub struct DeltaResult {
 }
 
 /// Handles `GetDeltaSummary` RPC.
-pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<DeltaResult, Status> {
-    eprintln!("[rpc] GetDeltaSummary: workspace={}", workspace_id);
+pub fn get_delta_summary(
+    state: &RpcState,
+    workspace_id: &str,
+    package_scope: &str,
+) -> Result<DeltaResult, Status> {
+    eprintln!(
+        "[rpc] GetDeltaSummary: workspace={}, package={}",
+        workspace_id,
+        if package_scope.is_empty() {
+            "<none>"
+        } else {
+            package_scope
+        }
+    );
     if workspace_id.is_empty() {
         return Err(Status::invalid_argument("workspace_id is required"));
     }
+    validate_package_scope(package_scope)
+        .map_err(|e| Status::invalid_argument(format!("invalid package_scope: {e}")))?;
     let conn = state
         .conn
         .lock()
         .map_err(|_| Status::internal("lock error"))?;
     let runs = store::get_recent_runs(&conn, workspace_id, 2)
         .map_err(|e| Status::internal(format!("query runs: {e}")))?;
-    let result = compute_delta(&conn, &runs)?;
+    let result = compute_delta(&conn, &runs, package_scope)?;
     eprintln!(
         "[rpc] Delta: new_tf={}, fixed_tf={}, new_f={}, fixed_f={}",
         result.new_test_failures,
@@ -213,7 +249,11 @@ pub fn get_delta_summary(state: &RpcState, workspace_id: &str) -> Result<DeltaRe
     Ok(result)
 }
 
-fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<DeltaResult, Status> {
+fn compute_delta(
+    conn: &Connection,
+    runs: &[store::RunInfo],
+    package_scope: &str,
+) -> Result<DeltaResult, Status> {
     if runs.is_empty() {
         return Ok(DeltaResult {
             new_test_failures: 0,
@@ -222,8 +262,10 @@ fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<DeltaResu
             fixed_findings: 0,
         });
     }
-    let (new_tf, fixed_tf) = compute_entity_delta(conn, runs, store::get_stable_ids_for_run)?;
-    let (new_f, fixed_f) = compute_entity_delta(conn, runs, store::get_finding_stable_ids_for_run)?;
+    let (new_tf, fixed_tf) =
+        compute_entity_delta(conn, runs, package_scope, store::get_test_failure_stable_ids_scoped)?;
+    let (new_f, fixed_f) =
+        compute_entity_delta(conn, runs, package_scope, store::get_finding_stable_ids_scoped)?;
     Ok(DeltaResult {
         new_test_failures: new_tf,
         fixed_test_failures: fixed_tf,
@@ -235,19 +277,20 @@ fn compute_delta(conn: &Connection, runs: &[store::RunInfo]) -> Result<DeltaResu
 fn compute_entity_delta<F>(
     conn: &Connection,
     runs: &[store::RunInfo],
+    package_scope: &str,
     query_fn: F,
 ) -> Result<(i32, i32), Status>
 where
-    F: Fn(&Connection, &str) -> Result<Vec<String>, store::StoreError>,
+    F: Fn(&Connection, &str, &str) -> Result<Vec<String>, store::StoreError>,
 {
-    let current_ids: HashSet<String> = query_fn(conn, &runs[0].run_id)
+    let current_ids: HashSet<String> = query_fn(conn, &runs[0].run_id, package_scope)
         .map_err(|e| Status::internal(format!("query current: {e}")))?
         .into_iter()
         .collect();
     if runs.len() < 2 {
         return Ok((current_ids.len() as i32, 0));
     }
-    let previous_ids: HashSet<String> = query_fn(conn, &runs[1].run_id)
+    let previous_ids: HashSet<String> = query_fn(conn, &runs[1].run_id, package_scope)
         .map_err(|e| Status::internal(format!("query previous: {e}")))?
         .into_iter()
         .collect();
@@ -302,14 +345,26 @@ mod tests {
             failures: &[TestFailureRow],
             findings: &[FindingRow],
         ) {
+            self.insert_run_with_data_and_package(workspace, run, time, "", failures, findings);
+        }
+
+        fn insert_run_with_data_and_package(
+            &self,
+            workspace: &str,
+            run: &str,
+            time: i64,
+            package: &str,
+            failures: &[TestFailureRow],
+            findings: &[FindingRow],
+        ) {
             let mut conn = self.state.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             store::insert_run(&tx, workspace, run, time).unwrap();
             if !failures.is_empty() {
-                store::insert_test_failures(&tx, run, failures).unwrap();
+                store::insert_test_failures(&tx, run, package, failures).unwrap();
             }
             if !findings.is_empty() {
-                store::insert_findings(&tx, run, findings).unwrap();
+                store::insert_findings(&tx, run, package, findings).unwrap();
             }
             store::complete_run(&tx, run, time + 1).unwrap();
             tx.commit().unwrap();
@@ -338,7 +393,7 @@ mod tests {
     fn manifest_validation_rejects_empty_workspace_id() {
         let helper = TestHelper::new();
         let m = create_manifest("", "run1", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&helper.state, &m)
+        assert!(ingest_manifest(&helper.state, &m, "")
             .unwrap_err()
             .message()
             .contains("workspace_id"));
@@ -348,7 +403,7 @@ mod tests {
     fn manifest_validation_rejects_empty_run_id() {
         let helper = TestHelper::new();
         let m = create_manifest("ws1", "", ArtifactKind::TestFailure, "/p");
-        assert!(ingest_manifest(&helper.state, &m)
+        assert!(ingest_manifest(&helper.state, &m, "")
             .unwrap_err()
             .message()
             .contains("run_id"));
@@ -357,7 +412,7 @@ mod tests {
     #[test]
     fn delta_validation_rejects_empty_workspace() {
         let helper = TestHelper::new();
-        assert!(get_delta_summary(&helper.state, "")
+        assert!(get_delta_summary(&helper.state, "", "")
             .unwrap_err()
             .message()
             .contains("workspace_id"));
@@ -395,7 +450,7 @@ mod tests {
             }],
             &[],
         );
-        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        let result = get_delta_summary(&helper.state, "ws1", "").unwrap();
         assert_eq!(result.new_test_failures, 1);
         assert_eq!(result.fixed_test_failures, 0);
     }
@@ -420,7 +475,7 @@ mod tests {
                 message: "m".into(),
             }],
         );
-        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        let result = get_delta_summary(&helper.state, "ws1", "").unwrap();
         assert_eq!(result.new_findings, 1);
         assert_eq!(result.fixed_findings, 0);
     }
@@ -430,7 +485,7 @@ mod tests {
     fn delta_with_no_findings_returns_zero() {
         let helper = TestHelper::new();
         helper.insert_run("ws1", "run1", 1000);
-        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        let result = get_delta_summary(&helper.state, "ws1", "").unwrap();
         assert_eq!(result.new_findings, 0);
         assert_eq!(result.fixed_findings, 0);
     }
@@ -469,7 +524,7 @@ mod tests {
                 },
             ],
         );
-        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        let result = get_delta_summary(&helper.state, "ws1", "").unwrap();
         assert_eq!(result.new_findings, 2);
         assert_eq!(result.fixed_findings, 0);
     }
@@ -540,8 +595,71 @@ mod tests {
                 },
             ],
         );
-        let result = get_delta_summary(&helper.state, "ws1").unwrap();
+        let result = get_delta_summary(&helper.state, "ws1", "").unwrap();
         assert_eq!(result.new_findings, 1); // f3 is new
         assert_eq!(result.fixed_findings, 1); // f2 is fixed
+    }
+
+    #[test]
+    fn delta_filters_by_package_scope() {
+        let helper = TestHelper::new();
+        // Insert data with different packages
+        helper.insert_run_with_data_and_package(
+            "ws1",
+            "run1",
+            1000,
+            "packages/auth",
+            &[TestFailureRow {
+                stable_id: "tf1".into(),
+                test_id: "t1".into(),
+                file: "f".into(),
+                message: "m".into(),
+            }],
+            &[],
+        );
+        // Add data for different package in same run
+        {
+            let mut conn = helper.state.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            store::insert_test_failures(
+                &tx,
+                "run1",
+                "packages/web",
+                &[TestFailureRow {
+                    stable_id: "tf2".into(),
+                    test_id: "t2".into(),
+                    file: "f2".into(),
+                    message: "m".into(),
+                }],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Scoped delta returns only matching package
+        let auth_result = get_delta_summary(&helper.state, "ws1", "packages/auth").unwrap();
+        assert_eq!(auth_result.new_test_failures, 1);
+
+        let web_result = get_delta_summary(&helper.state, "ws1", "packages/web").unwrap();
+        assert_eq!(web_result.new_test_failures, 1);
+
+        // Empty scope returns all
+        let all_result = get_delta_summary(&helper.state, "ws1", "").unwrap();
+        assert_eq!(all_result.new_test_failures, 2);
+    }
+
+    #[test]
+    fn package_scope_validation_rejects_invalid() {
+        let helper = TestHelper::new();
+        // Path traversal
+        assert!(get_delta_summary(&helper.state, "ws1", "../secret")
+            .unwrap_err()
+            .message()
+            .contains("package_scope"));
+        // Invalid chars
+        assert!(get_delta_summary(&helper.state, "ws1", "foo bar")
+            .unwrap_err()
+            .message()
+            .contains("package_scope"));
     }
 }

@@ -8,6 +8,8 @@ message GetAffectedTestsRequest {
   string workspace_id = 1;
   // Force full test run, bypassing affected selection.
   bool force_full = 2;
+  // Package scope for filtering (e.g., "packages/auth"). Empty = no scoping.
+  string package_scope = 3;
 }
 
 // Response from GetAffectedTests RPC.

@@ -26,6 +26,14 @@ interface ErrorResponse {
   error: string;
 }
 
+export interface PostCheckOptions {
+  socketPath: string;
+  workspaceId: string;
+  workspaceRoot: string;
+  packageScope: string | null;
+  deopt?: boolean;
+}
+
 /** Safely parse error response body, falling back to status code on parse failure. */
 async function parseErrorResponse(response: Response): Promise<string> {
   try {
@@ -85,29 +93,26 @@ export async function getVersion(socketPath: string): Promise<string> {
   }
 }
 
-export async function postCheck(
-  socketPath: string,
-  workspaceId: string,
-  workspaceRoot: string,
-  deopt?: boolean
-): Promise<CheckResponse> {
-  if (!existsSync(socketPath)) {
-    throw new Error("Engine socket not found");
+function buildCheckRequestBody(opts: PostCheckOptions): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    workspace_id: opts.workspaceId,
+    workspace_root: opts.workspaceRoot,
+  };
+  if (opts.packageScope) {
+    body.package_scope = opts.packageScope;
   }
+  if (opts.deopt) {
+    body.deopt = true;
+  }
+  return body;
+}
 
+async function executeCheckRequest(socketPath: string, body: Record<string, unknown>): Promise<CheckResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
 
   try {
-    const url = `http://localhost/check`;
-    const body: Record<string, unknown> = {
-      workspace_id: workspaceId,
-      workspace_root: workspaceRoot,
-    };
-    if (deopt) {
-      body.deopt = true;
-    }
-    const response = await fetch(url, {
+    const response = await fetch("http://localhost/check", {
       unix: socketPath,
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -118,7 +123,6 @@ export async function postCheck(
     if (!response.ok) {
       throw new Error(await parseErrorResponse(response));
     }
-
     return (await response.json()) as CheckResponse;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -128,4 +132,12 @@ export async function postCheck(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+export async function postCheck(opts: PostCheckOptions): Promise<CheckResponse> {
+  if (!existsSync(opts.socketPath)) {
+    throw new Error("Engine socket not found");
+  }
+  const body = buildCheckRequestBody(opts);
+  return executeCheckRequest(opts.socketPath, body);
 }

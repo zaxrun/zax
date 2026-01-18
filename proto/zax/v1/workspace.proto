@@ -13,12 +13,16 @@ message PingResponse {
 
 message IngestManifestRequest {
   ArtifactManifest manifest = 1;
+  // Package scope for storing entities (e.g., "packages/auth"). Empty = no scoping.
+  string package_scope = 2;
 }
 
 message IngestManifestResponse {}
 
 message GetDeltaSummaryRequest {
   string workspace_id = 1;
+  // Package scope for filtering (e.g., "packages/auth"). Empty = no scoping.
+  string package_scope = 2;
 }
 
 message GetDeltaSummaryResponse {

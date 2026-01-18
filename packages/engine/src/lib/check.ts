@@ -1,14 +1,13 @@
 import { spawn } from "bun";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { create } from "@bufbuild/protobuf";
-import { ArtifactKind, ArtifactManifestSchema, ArtifactRefSchema, type ArtifactRef } from "../gen/zax/v1/artifacts_pb.js";
 import { type RustClient, getAffectedTests } from "./rust-client.js";
 import { log } from "./logger.js";
+import { normalizeEslintPaths, normalizeVitestPaths } from "./normalize.js";
+import { ingestArtifacts, callGetDeltaSummary } from "./rpc-calls.js";
 
 const VITEST_TIMEOUT_MS = 300_000;
 const ESLINT_TIMEOUT_MS = 300_000;
-const RPC_TIMEOUT_MS = 30_000;
 
 export interface CheckOptions {
   cacheDir: string;
@@ -16,6 +15,7 @@ export interface CheckOptions {
   workspaceRoot: string;
   rustClient: RustClient;
   deopt?: boolean;
+  packageScope?: string;
 }
 
 export interface CheckResult {
@@ -57,57 +57,55 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
   try { return await executeCheck(options); } finally { checkInProgress = false; }
 }
 
+interface VitestRunResult { skipped: boolean; skippedCount: number; }
+
+async function runVitest(
+  workspaceRoot: string,
+  vitestPath: string,
+  affected: { isFullRun: boolean; testFiles: string[] }
+): Promise<VitestRunResult> {
+  if (affected.isFullRun) {
+    await spawnVitest(workspaceRoot, vitestPath);
+    return { skipped: false, skippedCount: 0 };
+  }
+  if (affected.testFiles.length > 0) {
+    await spawnVitest(workspaceRoot, vitestPath, affected.testFiles);
+    return { skipped: false, skippedCount: 0 };
+  }
+  log("No tests affected, skipping vitest");
+  return { skipped: true, skippedCount: 0 };
+}
+
 async function executeCheck(options: CheckOptions): Promise<CheckResult> {
-  const { cacheDir, workspaceId, workspaceRoot, rustClient, deopt } = options;
+  const { cacheDir, workspaceId, workspaceRoot, rustClient, deopt, packageScope } = options;
   const runId = crypto.randomUUID();
   const artifactsDir = join(cacheDir, "artifacts", runId);
   mkdirSync(artifactsDir, { recursive: true });
 
-  // Get affected tests from Rust service
   const forceFull = deopt ?? false;
-  const affected = await getAffectedTests(rustClient, workspaceId, forceFull);
+  const scope = packageScope ?? "";
+  const affected = await getAffectedTests(rustClient, workspaceId, forceFull, scope);
   const dirtyCount = affected.dirtyFiles.length;
   const affectedCount = affected.testFiles.length;
   log(`Affected: dirty=${dirtyCount}, tests=${affectedCount}, full_run=${affected.isFullRun}`);
 
   const vitestPath = join(artifactsDir, "vitest.json");
-  let vitestSkipped = false;
-  let skippedCount = 0;
+  const vitestRes = await runVitest(workspaceRoot, vitestPath, affected);
+  if (existsSync(vitestPath)) { normalizeVitestPaths(vitestPath, workspaceRoot); }
 
-  if (affected.isFullRun) {
-    // Full run: no file arguments
-    await spawnVitest(workspaceRoot, vitestPath);
-  } else if (affectedCount > 0) {
-    // Selective run: pass test files as arguments
-    await spawnVitest(workspaceRoot, vitestPath, affected.testFiles);
-  } else {
-    // No tests affected: skip vitest entirely
-    vitestSkipped = true;
-    log("No tests affected, skipping vitest");
-  }
-
-  if (existsSync(vitestPath)) {
-    normalizeVitestPaths(vitestPath, workspaceRoot);
-    // Count skipped tests (only meaningful when we have a vitest output)
-    if (!affected.isFullRun && !vitestSkipped) {
-      // TODO: Parse vitest output to get total test count for skippedCount
-      skippedCount = 0;
-    }
-  }
   const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"));
-  if (!eslintResult.skipped && eslintResult.outputPath) {
-    normalizeEslintPaths(eslintResult.outputPath, workspaceRoot);
-  }
-  await ingestArtifacts(rustClient, { workspaceId, runId, vitestPath, eslintResult });
-  const delta = await callGetDeltaSummary(rustClient, workspaceId);
+  if (!eslintResult.skipped && eslintResult.outputPath) { normalizeEslintPaths(eslintResult.outputPath, workspaceRoot); }
+
+  await ingestArtifacts(rustClient, { workspaceId, runId, vitestPath, eslintResult, packageScope: scope });
+  const delta = await callGetDeltaSummary(rustClient, workspaceId, scope);
   return {
     ...delta,
     eslintSkipped: eslintResult.skipped,
     eslintSkipReason: eslintResult.skipReason,
     affectedCount,
-    skippedCount,
+    skippedCount: vitestRes.skippedCount,
     dirtyCount,
-    vitestSkipped,
+    vitestSkipped: vitestRes.skipped,
   };
 }
 
@@ -177,83 +175,6 @@ export function detectEslintSkipReason(exitCode: number, stderr: string, outputF
   return undefined;
 }
 
-interface IngestParams { workspaceId: string; runId: string; vitestPath: string; eslintResult: EslintResult; }
 
-async function ingestArtifacts(client: RustClient, params: IngestParams): Promise<void> {
-  const { workspaceId, runId, vitestPath, eslintResult } = params;
-  const artifacts = buildArtifactList(runId, vitestPath, eslintResult);
-  const manifest = create(ArtifactManifestSchema, { workspaceId, runId, artifacts });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
-  try {
-    await client.ingestManifest({ manifest }, { signal: controller.signal });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") { throw new CheckError("RPC_TIMEOUT"); }
-    throw new CheckError("INTERNAL", String(error));
-  } finally { clearTimeout(timeoutId); }
-}
-
-function buildArtifactList(runId: string, vitestPath: string, eslintResult: EslintResult): ArtifactRef[] {
-  const artifacts: ArtifactRef[] = [
-    create(ArtifactRefSchema, { artifactId: `${runId}-vitest`, kind: ArtifactKind.TEST_FAILURE, path: vitestPath, hash: "" }),
-  ];
-  if (!eslintResult.skipped && eslintResult.outputPath) {
-    artifacts.push(create(ArtifactRefSchema, {
-      artifactId: `${runId}-eslint`, kind: ArtifactKind.FINDING, path: eslintResult.outputPath, hash: "",
-    }));
-  }
-  return artifacts;
-}
-
-async function callGetDeltaSummary(client: RustClient, workspaceId: string): Promise<{
-  newTestFailures: number; fixedTestFailures: number; newFindings: number; fixedFindings: number;
-}> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
-  try {
-    const r = await client.getDeltaSummary({ workspaceId }, { signal: controller.signal });
-    return { newTestFailures: r.newTestFailures, fixedTestFailures: r.fixedTestFailures, newFindings: r.newFindings, fixedFindings: r.fixedFindings };
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") { throw new CheckError("RPC_TIMEOUT"); }
-    throw new CheckError("INTERNAL", String(error));
-  } finally { clearTimeout(timeoutId); }
-}
-
-/** Strips workspace root prefix from a path. */
-export function stripWorkspacePrefix(path: string, workspaceRoot: string): string {
-  const prefix = workspaceRoot.endsWith("/") ? workspaceRoot : `${workspaceRoot}/`;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
-}
-
-/** Atomically writes content to file using temp file + rename. */
-function atomicWriteFile(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, content);
-  renameSync(tmpPath, filePath);
-}
-
-export function normalizeEslintPaths(filePath: string, workspaceRoot: string): void {
-  const content = readFileSync(filePath, "utf-8");
-  const results = JSON.parse(content) as Array<{ filePath?: string }>;
-  for (const result of results) {
-    if (result.filePath) {
-      result.filePath = stripWorkspacePrefix(result.filePath, workspaceRoot);
-    }
-  }
-  atomicWriteFile(filePath, JSON.stringify(results));
-}
-
-export function normalizeVitestPaths(filePath: string, workspaceRoot: string): void {
-  const content = readFileSync(filePath, "utf-8");
-  const output = JSON.parse(content) as { testResults?: Array<{ name?: string }> };
-  for (const result of output.testResults ?? []) {
-    if (result.name) {
-      result.name = stripWorkspacePrefix(result.name, workspaceRoot);
-    }
-  }
-  atomicWriteFile(filePath, JSON.stringify(output));
-}
-
-export function buildEslintCommand(outputPath: string): string[] {
-  return ["npx", "eslint", "-f", "json", "-o", outputPath, "."];
-}
+export { stripWorkspacePrefix, normalizeEslintPaths, normalizeVitestPaths } from "./normalize.js";
+export const buildEslintCommand = (outputPath: string): string[] => ["npx", "eslint", "-f", "json", "-o", outputPath, "."];

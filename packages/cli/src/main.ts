@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { computeWorkspaceId, getCacheDir, ensureCacheDir } from "./lib/workspace.js";
+import { computeWorkspaceId, getCacheDir, ensureCacheDir, getWorkspaceInfo } from "./lib/workspace.js";
 import { connectToEngine, getVersion, postCheck } from "./lib/engine-client.js";
 import { tryAcquireLock, releaseLock, acquireLockWithTimeout } from "./lib/lock.js";
 
@@ -167,13 +167,14 @@ async function handleVersion(cacheDir: string, cwd: string): Promise<void> {
 async function handleCheck(
   cacheDir: string,
   workspaceId: string,
-  cwd: string,
+  workspaceRoot: string,
+  packageScope: string | null,
   deopt: boolean
 ): Promise<void> {
   try {
     const startTime = Date.now();
-    const socketPath = await ensureEngine(cacheDir, cwd);
-    const result = await postCheck(socketPath, workspaceId, cwd, deopt);
+    const socketPath = await ensureEngine(cacheDir, workspaceRoot);
+    const result = await postCheck({ socketPath, workspaceId, workspaceRoot, packageScope, deopt });
     const durationSecs = (Date.now() - startTime) / 1000;
 
     // Display affected summary (before test output)
@@ -200,7 +201,11 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const cwd = process.cwd();
 
-  const workspaceId = computeWorkspaceId(cwd);
+  // Detect workspace root and package scope
+  const { workspaceRoot, packageScope } = getWorkspaceInfo(cwd);
+
+  // Compute workspace ID from the detected root (not cwd)
+  const workspaceId = computeWorkspaceId(workspaceRoot);
   const cacheDir = getCacheDir(workspaceId);
 
   try {
@@ -218,7 +223,7 @@ async function main(): Promise<void> {
   const arg = args[0];
 
   if (arg === "--version" || arg === "-v") {
-    await handleVersion(cacheDir, cwd);
+    await handleVersion(cacheDir, workspaceRoot);
     return;
   }
 
@@ -229,7 +234,7 @@ async function main(): Promise<void> {
 
   if (arg === "check") {
     const deopt = args.includes("--deopt");
-    await handleCheck(cacheDir, workspaceId, cwd, deopt);
+    await handleCheck(cacheDir, workspaceId, workspaceRoot, packageScope, deopt);
     return;
   }
 

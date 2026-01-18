@@ -51,11 +51,11 @@ impl WorkspaceService for WorkspaceServiceImpl {
         &self,
         request: Request<IngestManifestRequest>,
     ) -> Result<Response<IngestManifestResponse>, Status> {
-        let manifest = request
-            .into_inner()
+        let req = request.into_inner();
+        let manifest = req
             .manifest
             .ok_or_else(|| Status::invalid_argument("manifest is required"))?;
-        rpc::ingest_manifest(&self.state, &manifest)?;
+        rpc::ingest_manifest(&self.state, &manifest, &req.package_scope)?;
         Ok(Response::new(IngestManifestResponse {}))
     }
 
@@ -64,7 +64,7 @@ impl WorkspaceService for WorkspaceServiceImpl {
         request: Request<GetDeltaSummaryRequest>,
     ) -> Result<Response<GetDeltaSummaryResponse>, Status> {
         let req = request.into_inner();
-        let result = rpc::get_delta_summary(&self.state, &req.workspace_id)?;
+        let result = rpc::get_delta_summary(&self.state, &req.workspace_id, &req.package_scope)?;
         Ok(Response::new(GetDeltaSummaryResponse {
             new_findings: result.new_findings,
             fixed_findings: result.fixed_findings,
@@ -83,7 +83,7 @@ impl WorkspaceService for WorkspaceServiceImpl {
                 .affected
                 .lock()
                 .map_err(|_| Status::internal("affected lock error"))?;
-            affected.get_affected_tests(req.force_full)
+            affected.get_affected_tests(req.force_full, &req.package_scope)
         };
         Ok(Response::new(GetAffectedTestsResponse {
             test_files: result.test_files,

@@ -79,18 +79,19 @@ pub fn complete_run(tx: &Transaction, run_id: &str, completed_at: i64) -> Result
     Ok(())
 }
 
-/// Inserts test failures in batch.
+/// Inserts test failures in batch with package scope.
 pub fn insert_test_failures(
     tx: &Transaction,
     run_id: &str,
+    package: &str,
     failures: &[TestFailureRow],
 ) -> Result<(), StoreError> {
     let mut stmt = tx.prepare(
-        "INSERT INTO test_failures (run_id, stable_id, test_id, file, message) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO test_failures (run_id, stable_id, test_id, file, message, package) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
     for f in failures {
-        stmt.execute(params![run_id, f.stable_id, f.test_id, f.file, f.message])?;
+        stmt.execute(params![run_id, f.stable_id, f.test_id, f.file, f.message, package])?;
     }
     Ok(())
 }
@@ -123,16 +124,17 @@ pub fn get_stable_ids_for_run(conn: &Connection, run_id: &str) -> Result<Vec<Str
         .map_err(StoreError::from)
 }
 
-/// Inserts findings in batch.
+/// Inserts findings in batch with package scope.
 pub fn insert_findings(
     tx: &Transaction,
     run_id: &str,
+    package: &str,
     findings: &[FindingRow],
 ) -> Result<(), StoreError> {
     let mut stmt = tx.prepare(
         "INSERT INTO findings (run_id, stable_id, tool, rule, file, \
-         start_line, start_column, end_line, end_column, message) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         start_line, start_column, end_line, end_column, message, package) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for f in findings {
         stmt.execute(params![
@@ -145,7 +147,8 @@ pub fn insert_findings(
             f.start_column,
             f.end_line,
             f.end_column,
-            f.message
+            f.message,
+            package
         ])?;
     }
     Ok(())
@@ -158,6 +161,40 @@ pub fn get_finding_stable_ids_for_run(
 ) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT stable_id FROM findings WHERE run_id = ?1")?;
     let rows = stmt.query_map(params![run_id], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
+}
+
+/// Gets test failure `stable_ids` for a given run, scoped to a package.
+/// If `package_scope` is empty, returns all test failures (no filtering).
+pub fn get_test_failure_stable_ids_scoped(
+    conn: &Connection,
+    run_id: &str,
+    package_scope: &str,
+) -> Result<Vec<String>, StoreError> {
+    if package_scope.is_empty() {
+        return get_stable_ids_for_run(conn, run_id);
+    }
+    let mut stmt =
+        conn.prepare("SELECT stable_id FROM test_failures WHERE run_id = ?1 AND package = ?2")?;
+    let rows = stmt.query_map(params![run_id, package_scope], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
+}
+
+/// Gets finding `stable_ids` for a given run, scoped to a package.
+/// If `package_scope` is empty, returns all findings (no filtering).
+pub fn get_finding_stable_ids_scoped(
+    conn: &Connection,
+    run_id: &str,
+    package_scope: &str,
+) -> Result<Vec<String>, StoreError> {
+    if package_scope.is_empty() {
+        return get_finding_stable_ids_for_run(conn, run_id);
+    }
+    let mut stmt =
+        conn.prepare("SELECT stable_id FROM findings WHERE run_id = ?1 AND package = ?2")?;
+    let rows = stmt.query_map(params![run_id, package_scope], |row| row.get(0))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(StoreError::from)
 }
@@ -239,7 +276,7 @@ mod tests {
             file: "test.ts".into(),
             message: "failed".into(),
         }];
-        insert_test_failures(&tx, "run1", &failures).unwrap();
+        insert_test_failures(&tx, "run1", "", &failures).unwrap();
         tx.commit().unwrap();
 
         let ids = get_stable_ids_for_run(&conn, "run1").unwrap();
@@ -299,7 +336,7 @@ mod tests {
             end_column: 15,
             message: "x is unused".into(),
         }];
-        insert_findings(&tx, "run1", &findings).unwrap();
+        insert_findings(&tx, "run1", "", &findings).unwrap();
         tx.commit().unwrap();
 
         let ids = get_finding_stable_ids_for_run(&conn, "run1").unwrap();
@@ -321,6 +358,7 @@ mod tests {
             insert_test_failures(
                 &tx,
                 "run1",
+                "",
                 &[TestFailureRow {
                     stable_id: "tf1".into(),
                     test_id: "t1".into(),
@@ -332,6 +370,7 @@ mod tests {
             insert_findings(
                 &tx,
                 "run1",
+                "",
                 &[FindingRow {
                     stable_id: "f1".into(),
                     tool: "eslint".into(),
@@ -360,5 +399,173 @@ mod tests {
         assert_eq!(tf_ids, vec!["tf1"]);
         let f_ids = get_finding_stable_ids_for_run(&conn, "run1").unwrap();
         assert_eq!(f_ids, vec!["f1"]);
+    }
+
+    #[test]
+    fn schema_has_package_column_and_indices() {
+        let (_dir, conn) = setup();
+        // Package column exists
+        conn.prepare("SELECT package FROM test_failures LIMIT 0")
+            .unwrap();
+        conn.prepare("SELECT package FROM findings LIMIT 0")
+            .unwrap();
+        // Composite indices exist
+        let idx_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND \
+                 name IN ('idx_test_failures_run_package', 'idx_findings_run_package')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 2);
+    }
+
+    #[test]
+    fn scoped_queries_filter_by_package() {
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        // Insert failures in different packages
+        insert_test_failures(
+            &tx,
+            "run1",
+            "packages/auth",
+            &[TestFailureRow {
+                stable_id: "tf1".into(),
+                test_id: "t1".into(),
+                file: "f.ts".into(),
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        insert_test_failures(
+            &tx,
+            "run1",
+            "packages/web",
+            &[TestFailureRow {
+                stable_id: "tf2".into(),
+                test_id: "t2".into(),
+                file: "f2.ts".into(),
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        // Insert findings in different packages
+        insert_findings(
+            &tx,
+            "run1",
+            "packages/auth",
+            &[FindingRow {
+                stable_id: "f1".into(),
+                tool: "eslint".into(),
+                rule: "r".into(),
+                file: "f.js".into(),
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        complete_run(&tx, "run1", 1001).unwrap();
+        tx.commit().unwrap();
+
+        // Scoped query returns only matching package
+        let auth_tf = get_test_failure_stable_ids_scoped(&conn, "run1", "packages/auth").unwrap();
+        assert_eq!(auth_tf, vec!["tf1"]);
+        let web_tf = get_test_failure_stable_ids_scoped(&conn, "run1", "packages/web").unwrap();
+        assert_eq!(web_tf, vec!["tf2"]);
+
+        // Empty scope returns all
+        let all_tf = get_test_failure_stable_ids_scoped(&conn, "run1", "").unwrap();
+        assert_eq!(all_tf.len(), 2);
+
+        // Scoped findings query
+        let auth_f = get_finding_stable_ids_scoped(&conn, "run1", "packages/auth").unwrap();
+        assert_eq!(auth_f, vec!["f1"]);
+    }
+
+    #[test]
+    fn default_empty_package_on_migration() {
+        // Verify that existing records have DEFAULT '' for package column
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        // Insert with empty package (simulates pre-V4 data behavior)
+        insert_test_failures(
+            &tx,
+            "run1",
+            "",
+            &[TestFailureRow {
+                stable_id: "tf1".into(),
+                test_id: "t1".into(),
+                file: "f.ts".into(),
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Query with empty scope should return the record
+        let result = get_test_failure_stable_ids_scoped(&conn, "run1", "").unwrap();
+        assert_eq!(result, vec!["tf1"]);
+
+        // Verify package column is actually empty string
+        let pkg: String = conn
+            .query_row(
+                "SELECT package FROM test_failures WHERE stable_id = ?1",
+                params!["tf1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pkg, "");
+    }
+
+    #[test]
+    fn nonexistent_package_scope_returns_empty() {
+        let (_dir, mut conn) = setup();
+        let tx = conn.transaction().unwrap();
+        insert_run(&tx, "ws1", "run1", 1000).unwrap();
+        insert_test_failures(
+            &tx,
+            "run1",
+            "packages/auth",
+            &[TestFailureRow {
+                stable_id: "tf1".into(),
+                test_id: "t1".into(),
+                file: "f.ts".into(),
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        insert_findings(
+            &tx,
+            "run1",
+            "packages/auth",
+            &[FindingRow {
+                stable_id: "f1".into(),
+                tool: "eslint".into(),
+                rule: "r".into(),
+                file: "f.js".into(),
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+                message: "m".into(),
+            }],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Query with non-existent package returns empty
+        let tf_result =
+            get_test_failure_stable_ids_scoped(&conn, "run1", "packages/nonexistent").unwrap();
+        assert!(tf_result.is_empty());
+
+        let f_result =
+            get_finding_stable_ids_scoped(&conn, "run1", "packages/nonexistent").unwrap();
+        assert!(f_result.is_empty());
     }
 }
