@@ -5,9 +5,19 @@ import { type RustClient, getAffectedTests } from "./rust-client.js";
 import { log } from "./logger.js";
 import { normalizeEslintPaths, normalizeVitestPaths } from "./normalize.js";
 import { ingestArtifacts, callGetDeltaSummary } from "./rpc-calls.js";
+import { CheckError, type CheckErrorCode } from "./errors.js";
+import {
+  detectPackageManager,
+  preFlightCheck,
+  buildVitestCommand,
+  buildEslintCommand,
+  type PackageManager
+} from "./pkg-manager.js";
 
 const VITEST_TIMEOUT_MS = 300_000;
 const ESLINT_TIMEOUT_MS = 300_000;
+
+export { CheckError, type CheckErrorCode };
 
 export interface CheckOptions {
   cacheDir: string;
@@ -31,18 +41,6 @@ export interface CheckResult {
   vitestSkipped: boolean;
 }
 
-export type CheckErrorCode =
-  | "CONCURRENT_CHECK" | "VITEST_NOT_FOUND" | "VITEST_TIMEOUT"
-  | "VITEST_FAILED" | "PARSE_ERROR" | "RPC_TIMEOUT" | "INTERNAL";
-
-export class CheckError extends Error {
-  code: CheckErrorCode;
-  constructor(code: CheckErrorCode, message?: string) {
-    super(message ?? code);
-    this.code = code;
-    this.name = "CheckError";
-  }
-}
 
 export type EslintSkipReason = "not found" | "no config" | "failed" | "timeout";
 
@@ -62,14 +60,15 @@ interface VitestRunResult { skipped: boolean; skippedCount: number; }
 async function runVitest(
   workspaceRoot: string,
   vitestPath: string,
+  pm: PackageManager,
   affected: { isFullRun: boolean; testFiles: string[] }
 ): Promise<VitestRunResult> {
   if (affected.isFullRun) {
-    await spawnVitest(workspaceRoot, vitestPath);
+    await spawnVitest(workspaceRoot, vitestPath, pm);
     return { skipped: false, skippedCount: 0 };
   }
   if (affected.testFiles.length > 0) {
-    await spawnVitest(workspaceRoot, vitestPath, affected.testFiles);
+    await spawnVitest(workspaceRoot, vitestPath, pm, affected.testFiles);
     return { skipped: false, skippedCount: 0 };
   }
   log("No tests affected, skipping vitest");
@@ -78,6 +77,9 @@ async function runVitest(
 
 async function executeCheck(options: CheckOptions): Promise<CheckResult> {
   const { cacheDir, workspaceId, workspaceRoot, rustClient, deopt, packageScope } = options;
+  const pm = detectPackageManager(workspaceRoot);
+  preFlightCheck(workspaceRoot, pm);
+
   const runId = crypto.randomUUID();
   const artifactsDir = join(cacheDir, "artifacts", runId);
   mkdirSync(artifactsDir, { recursive: true });
@@ -90,10 +92,10 @@ async function executeCheck(options: CheckOptions): Promise<CheckResult> {
   log(`Affected: dirty=${dirtyCount}, tests=${affectedCount}, full_run=${affected.isFullRun}`);
 
   const vitestPath = join(artifactsDir, "vitest.json");
-  const vitestRes = await runVitest(workspaceRoot, vitestPath, affected);
+  const vitestRes = await runVitest(workspaceRoot, vitestPath, pm, affected);
   if (existsSync(vitestPath)) { normalizeVitestPaths(vitestPath, workspaceRoot); }
 
-  const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"));
+  const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"), pm);
   if (!eslintResult.skipped && eslintResult.outputPath) { normalizeEslintPaths(eslintResult.outputPath, workspaceRoot); }
 
   await ingestArtifacts(rustClient, { workspaceId, runId, vitestPath, eslintResult, packageScope: scope });
@@ -112,12 +114,10 @@ async function executeCheck(options: CheckOptions): Promise<CheckResult> {
 async function spawnVitest(
   workspaceRoot: string,
   outputFile: string,
+  pm: PackageManager,
   testFiles?: string[]
 ): Promise<void> {
-  const cmd = ["npx", "vitest", "run", "--reporter=json", `--outputFile=${outputFile}`];
-  if (testFiles && testFiles.length > 0) {
-    cmd.push(...testFiles);
-  }
+  const cmd = buildVitestCommand(pm, outputFile, testFiles);
   log(`Spawning vitest in ${workspaceRoot}${testFiles ? ` (${testFiles.length} files)` : ""}`);
   const proc = spawn({
     cmd,
@@ -143,10 +143,10 @@ async function spawnVitest(
   log(`Vitest completed: exit=${exitCode}`);
 }
 
-export async function spawnEslint(workspaceRoot: string, outputFile: string): Promise<EslintResult> {
+export async function spawnEslint(workspaceRoot: string, outputFile: string, pm: PackageManager): Promise<EslintResult> {
   log(`Spawning eslint in ${workspaceRoot}`);
   const proc = spawn({
-    cmd: buildEslintCommand(outputFile),
+    cmd: buildEslintCommand(pm, outputFile),
     cwd: workspaceRoot, stdout: "pipe", stderr: "pipe",
   });
   let timedOut = false;
@@ -177,4 +177,4 @@ export function detectEslintSkipReason(exitCode: number, stderr: string, outputF
 
 
 export { stripWorkspacePrefix, normalizeEslintPaths, normalizeVitestPaths } from "./normalize.js";
-export const buildEslintCommand = (outputPath: string): string[] => ["npx", "eslint", "-f", "json", "-o", outputPath, "."];
+export { buildEslintCommand };

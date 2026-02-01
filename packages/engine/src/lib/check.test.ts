@@ -60,13 +60,13 @@ describe("check module", () => {
   describe("buildEslintCommand", () => {
     test("returns correct command array with output path", () => {
       const path = "/cache/artifacts/run1/eslint.json";
-      const cmd = buildEslintCommand(path);
+      const cmd = buildEslintCommand("npm", path);
       expect(cmd).toEqual(["npx", "eslint", "-f", "json", "-o", path, "."]);
     });
 
     test("output path is in -o flag", () => {
       const outputPath = "/cache/artifacts/run-uuid/eslint.json";
-      const cmd = buildEslintCommand(outputPath);
+      const cmd = buildEslintCommand("npm", outputPath);
       // cmd is ["npx", "eslint", "-f", "json", "-o", outputPath, "."]
       const outputIndex = cmd.indexOf("-o") + 1;
       expect(cmd[outputIndex]).toBe(outputPath);
@@ -78,13 +78,18 @@ describe("check module", () => {
       const mockClient = {
         ingestManifest: mock(() => Promise.resolve({})),
         getDeltaSummary: mock(() => Promise.resolve({ newTestFailures: 0, fixedTestFailures: 0 })),
+        getAffectedTests: mock(() => Promise.resolve({ dirtyFiles: [], testFiles: [], isFullRun: false })),
       };
+
+      // Create a valid workspace with node_modules so preFlightCheck passes
+      const validWorkspace = join(cacheDir, "valid-workspace");
+      mkdirSync(join(validWorkspace, "node_modules"), { recursive: true });
 
       try {
         await runCheck({
           cacheDir,
           workspaceId: "test-ws",
-          workspaceRoot: "/nonexistent",
+          workspaceRoot: validWorkspace,
           rustClient: mockClient as never,
         });
       } catch {
@@ -95,18 +100,27 @@ describe("check module", () => {
       expect(existsSync(artifactsDir)).toBe(true);
     });
 
-    test("throws error when vitest/npx is missing", async () => {
+    test("throws DEPS_NOT_INSTALLED when node_modules is missing", async () => {
       const mockClient = {
         ingestManifest: mock(() => Promise.resolve({})),
         getDeltaSummary: mock(() => Promise.resolve({ newTestFailures: 0, fixedTestFailures: 0 })),
       };
 
-      await expect(runCheck({
-        cacheDir,
-        workspaceId: "test-ws",
-        workspaceRoot: "/nonexistent/path/that/does/not/exist",
-        rustClient: mockClient as never,
-      })).rejects.toThrow();
+      try {
+        await runCheck({
+          cacheDir,
+          workspaceId: "test-ws",
+          workspaceRoot: "/nonexistent/path/that/does/not/exist",
+          rustClient: mockClient as never,
+        });
+        expect(true).toBe(false); // Should have thrown
+      } catch (e: unknown) {
+        if (e instanceof CheckError) {
+          expect(e.code).toBe("DEPS_NOT_INSTALLED");
+        } else {
+          throw e;
+        }
+      }
     });
 
     test("concurrent check flag is reset after completion", async () => {
@@ -321,7 +335,7 @@ describe("check module", () => {
       const testOutputFile = join(cacheDir, "eslint-seq-test.json");
 
       // spawnEslint should return a result even when eslint is not installed
-      const result = await spawnEslint(cacheDir, testOutputFile);
+      const result = await spawnEslint(cacheDir, testOutputFile, "npm");
       expect(result).toHaveProperty("skipped");
       // In test env without eslint, should be skipped
       expect(result.skipped).toBe(true);

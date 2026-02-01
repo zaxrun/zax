@@ -225,6 +225,7 @@ function mapCheckError(err: CheckError, headers: Record<string, string>): Respon
     case "VITEST_FAILED":
     case "PARSE_ERROR":
     case "INTERNAL":
+    case "DEPS_NOT_INSTALLED":
       return new Response(JSON.stringify({ error: err.message, code: err.code }), {
         status: 500,
         headers,
