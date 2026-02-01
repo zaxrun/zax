@@ -60,9 +60,10 @@ export function buildVitestCommand(
 
 export function buildEslintCommand(
   pm: PackageManager,
-  outputPath: string
+  outputPath: string,
+  targetPath?: string
 ): string[] {
-  return [...RUNNER_COMMANDS[pm], "eslint", "-f", "json", "-o", outputPath, "."];
+  return [...RUNNER_COMMANDS[pm], "eslint", "-f", "json", "-o", outputPath, targetPath ?? "."];
 }
 
 export function preFlightCheck(workspaceRoot: string, pm: PackageManager): void {

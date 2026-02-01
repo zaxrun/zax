@@ -71,6 +71,13 @@ describe("check module", () => {
       const outputIndex = cmd.indexOf("-o") + 1;
       expect(cmd[outputIndex]).toBe(outputPath);
     });
+
+    test("uses targetPath when provided", () => {
+      const path = "/cache/artifacts/run1/eslint.json";
+      const cmd = buildEslintCommand("npm", path, "packages/auth");
+      expect(cmd).toEqual(["npx", "eslint", "-f", "json", "-o", path, "packages/auth"]);
+      expect(cmd).not.toContain(".");
+    });
   });
 
   describe("runCheck", () => {

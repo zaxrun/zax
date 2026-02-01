@@ -95,7 +95,8 @@ async function executeCheck(options: CheckOptions): Promise<CheckResult> {
   const vitestRes = await runVitest(workspaceRoot, vitestPath, pm, affected);
   if (existsSync(vitestPath)) { normalizeVitestPaths(vitestPath, workspaceRoot); }
 
-  const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"), pm);
+  const eslintTarget = scope || undefined;
+  const eslintResult = await spawnEslint(workspaceRoot, join(artifactsDir, "eslint.json"), pm, eslintTarget);
   if (!eslintResult.skipped && eslintResult.outputPath) { normalizeEslintPaths(eslintResult.outputPath, workspaceRoot); }
 
   await ingestArtifacts(rustClient, { workspaceId, runId, vitestPath, eslintResult, packageScope: scope });
@@ -143,10 +144,10 @@ async function spawnVitest(
   log(`Vitest completed: exit=${exitCode}`);
 }
 
-export async function spawnEslint(workspaceRoot: string, outputFile: string, pm: PackageManager): Promise<EslintResult> {
-  log(`Spawning eslint in ${workspaceRoot}`);
+export async function spawnEslint(workspaceRoot: string, outputFile: string, pm: PackageManager, targetPath?: string): Promise<EslintResult> {
+  log(`Spawning eslint in ${workspaceRoot}${targetPath ? ` (scope: ${targetPath})` : ""}`);
   const proc = spawn({
-    cmd: buildEslintCommand(pm, outputFile),
+    cmd: buildEslintCommand(pm, outputFile, targetPath),
     cwd: workspaceRoot, stdout: "pipe", stderr: "pipe",
   });
   let timedOut = false;

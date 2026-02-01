@@ -185,6 +185,25 @@ describe("pkg-manager module", () => {
        expect(cmd).toContain("out.json");
        expect(cmd).toContain(".");
     });
+
+    test("defaults to '.' when no targetPath provided", () => {
+       const cmd = buildEslintCommand("npm", "out.json");
+       expect(cmd[cmd.length - 1]).toBe(".");
+    });
+
+    test("uses targetPath instead of '.' when provided", () => {
+       const cmd = buildEslintCommand("npm", "out.json", "packages/auth");
+       expect(cmd[cmd.length - 1]).toBe("packages/auth");
+       expect(cmd).not.toContain(".");
+    });
+
+    test("targetPath works for all package managers", () => {
+       const pms: PackageManager[] = ["npm", "pnpm", "yarn", "bun"];
+       pms.forEach(pm => {
+          const cmd = buildEslintCommand(pm, "out.json", "packages/auth");
+          expect(cmd[cmd.length - 1]).toBe("packages/auth");
+       });
+    });
   });
 
   describe("preFlightCheck", () => {
