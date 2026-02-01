@@ -3,6 +3,7 @@ import { join, resolve, dirname } from "node:path";
 import { computeWorkspaceId, getCacheDir, ensureCacheDir, getWorkspaceInfo } from "./lib/workspace.js";
 import { connectToEngine, getVersion, postCheck } from "./lib/engine-client.js";
 import { tryAcquireLock, releaseLock, acquireLockWithTimeout } from "./lib/lock.js";
+import { parseCheckArgs } from "./lib/args.js";
 
 const SOCKET_WAIT_TIMEOUT_MS = 10000;
 const SOCKET_POLL_INTERVAL_MS = 100;
@@ -21,9 +22,10 @@ function printUsage(): void {
   console.log("  check            Run tests and show delta");
   console.log("");
   console.log("Options:");
-  console.log("  -v, --version    Print version");
-  console.log("  -h, --help       Print help");
-  console.log("  --deopt          Disable affected test selection (run all tests)");
+  console.log("  -p, --package <scope>  Override package scope (e.g., packages/auth)");
+  console.log("  --deopt                Disable affected test selection (run all tests)");
+  console.log("  -v, --version          Print version");
+  console.log("  -h, --help             Print help");
 }
 
 function printError(message: string): void {
@@ -233,8 +235,9 @@ async function main(): Promise<void> {
   }
 
   if (arg === "check") {
-    const deopt = args.includes("--deopt");
-    await handleCheck(cacheDir, workspaceId, workspaceRoot, packageScope, deopt);
+    const checkArgs = parseCheckArgs(args);
+    const scope = checkArgs.packageScope ?? packageScope;
+    await handleCheck(cacheDir, workspaceId, workspaceRoot, scope, checkArgs.deopt);
     return;
   }
 
